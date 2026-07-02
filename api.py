@@ -66,7 +66,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",          # Vite dev server
-        "https://shoplens.vercel.app",    # Replace with your actual Vercel URL
+        "https://rag-based-shopping-assistant.vercel.app",    # Replace with your actual Vercel URL
         # Add any preview URLs e.g. "https://shoplens-git-main-yourname.vercel.app"
     ],
     allow_credentials=True,
