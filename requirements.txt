@@ -8,3 +8,4 @@ faiss-cpu
 rank-bm25
 python-dotenv
 pydantic
+psycopg2-binary

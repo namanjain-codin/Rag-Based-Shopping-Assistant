@@ -1,39 +1,53 @@
-import { useState, useMemo, useRef, useEffect } from "react";
-import { PRODUCTS, CATEGORIES, CATEGORY_ICONS } from "./products.js";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import AdminPage from "./AdminPage.jsx";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const LOW_STOCK_THRESHOLD = 5;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const stars = (r) => "★".repeat(Math.floor(r)) + (r % 1 >= 0.5 ? "½" : "") + "☆".repeat(5 - Math.ceil(r));
-const catColor = {
-  Footwear:"#6366f1", Clothing:"#ec4899", Bags:"#f59e0b", Accessories:"#10b981",
-  Fitness:"#ef4444", Camping:"#84cc16", Electronics:"#3b82f6",
-  Equipment:"#8b5cf6", Sports:"#f97316", Travel:"#06b6d4"
+const stars = (r) => {
+  const full = Math.floor(r), half = r % 1 >= 0.5;
+  return "★".repeat(full) + (half ? "½" : "") + "☆".repeat(5 - Math.ceil(r));
 };
-const getCatBg = (cat) => catColor[cat] || "#6366f1";
+const CAT_COLOR = {
+  Footwear:"#6366f1",Clothing:"#ec4899",Bags:"#f59e0b",Accessories:"#10b981",
+  Fitness:"#ef4444",Camping:"#84cc16",Electronics:"#3b82f6",
+  Equipment:"#8b5cf6",Sports:"#f97316",Travel:"#06b6d4"
+};
+const CAT_ICON = {
+  Footwear:"👟",Clothing:"🧥",Bags:"🎒",Accessories:"🧢",
+  Fitness:"💪",Camping:"⛺",Electronics:"📱",Equipment:"🔧",Sports:"🚴",Travel:"✈️",All:"🛍️"
+};
+const CATEGORIES = ["All","Footwear","Clothing","Bags","Accessories","Fitness","Camping","Electronics","Equipment","Sports","Travel"];
+const cc = (cat) => CAT_COLOR[cat] || "#6366f1";
 
-// ── Product Card (catalog) ────────────────────────────────────────────────────
+// ── Stock pill ────────────────────────────────────────────────────────────────
+function StockPill({ stock }) {
+  if (stock === 0)        return <span className="spill out">Out of stock</span>;
+  if (stock <= LOW_STOCK_THRESHOLD) return <span className="spill low">Only {stock} left!</span>;
+  return null;
+}
+
+// ── Product Card ──────────────────────────────────────────────────────────────
 function ProductCard({ p, onAskAI }) {
+  const isLow = p.stock !== undefined && p.stock <= LOW_STOCK_THRESHOLD;
   return (
-    <div className="pcard">
-      <div className="pcard-img" style={{ background: `linear-gradient(135deg, ${getCatBg(p.category)}22 0%, ${getCatBg(p.category)}44 100%)` }}>
-        <span className="pcard-cat-icon">{CATEGORY_ICONS[p.category]}</span>
-        <span className="pcard-cat-badge" style={{ background: getCatBg(p.category) }}>{p.category}</span>
+    <div className={`pcard${isLow ? " pcard-low" : ""}`}>
+      <div className="pcard-img" style={{ background:`linear-gradient(135deg,${cc(p.category)}22,${cc(p.category)}44)` }}>
+        <span className="pcard-emoji">{CAT_ICON[p.category]}</span>
+        <span className="pcard-cat" style={{ background:cc(p.category) }}>{p.category}</span>
+        {isLow && <span className="pcard-low-flag">⚠ Low stock</span>}
       </div>
       <div className="pcard-body">
         <p className="pcard-brand">{p.brand}</p>
         <h3 className="pcard-name">{p.name}</h3>
-        <div className="pcard-stars">
-          <span className="stars">{stars(p.rating)}</span>
-          <span className="rating-num">{p.rating}</span>
-        </div>
-        <div className="pcard-features">
-          {p.features.map(f => <span key={f} className="feat-pill">{f}</span>)}
-        </div>
-        <p className="pcard-desc">{p.description.slice(0, 80)}…</p>
-        <div className="pcard-footer">
-          <span className="pcard-price">₹{p.price.toLocaleString()}</span>
-          <button className="btn-ai" onClick={() => onAskAI(p.name)}>Ask AI ✦</button>
+        <div className="pcard-stars"><span className="st">{stars(p.rating)}</span><span className="rn">{p.rating}</span></div>
+        <div className="pcard-tags">{(p.features||[]).slice(0,3).map(f=><span key={f} className="tag">{f}</span>)}</div>
+        <p className="pcard-desc">{(p.description||"").slice(0,80)}…</p>
+        <StockPill stock={p.stock} />
+        <div className="pcard-foot">
+          <span className="pcard-price">₹{Number(p.price).toLocaleString()}</span>
+          <button className="btn-ai" onClick={()=>onAskAI(p.name)}>Ask AI ✦</button>
         </div>
       </div>
     </div>
@@ -41,46 +55,37 @@ function ProductCard({ p, onAskAI }) {
 }
 
 // ── AI Result Card ────────────────────────────────────────────────────────────
-function AIResultCard({ rec, rank }) {
+function AICard({ rec, rank }) {
   const [open, setOpen] = useState(false);
   const sb = rec.score_breakdown;
   return (
-    <div className="ai-card" style={{ animationDelay: `${rank * 60}ms` }}>
-      <div className="ai-card-rank">#{rank + 1}</div>
-      <div className="ai-card-main">
-        <div className="ai-card-header">
+    <div className="aicard" style={{ animationDelay:`${rank*60}ms` }}>
+      <div className="aicard-rank" style={{ background:cc(rec.category) }}>#{rank+1}</div>
+      <div className="aicard-body">
+        <div className="aicard-top">
           <div>
-            <span className="ai-cat-badge" style={{ background: getCatBg(rec.category) }}>{rec.category}</span>
-            <h3 className="ai-name">{rec.name}</h3>
-            <p className="ai-brand">{rec.brand}</p>
+            <span className="aicat" style={{ background:cc(rec.category) }}>{rec.category}</span>
+            <h3 className="aicard-name">{rec.name}</h3>
+            <p className="aicard-brand">{rec.brand}</p>
           </div>
-          <div className="ai-right">
-            <div className="ai-price">₹{rec.price.toLocaleString()}</div>
-            <div className="ai-stars">{stars(rec.rating)} <span>{rec.rating}</span></div>
+          <div className="aicard-right">
+            <div className="aicard-price">₹{Number(rec.price).toLocaleString()}</div>
+            <div className="aicard-stars"><span className="st">{stars(rec.rating)}</span> {rec.rating}</div>
           </div>
         </div>
-        <p className="ai-explanation">{rec.explanation}</p>
-        <div className="ai-features">
-          {rec.features.slice(0, 5).map(f => <span key={f} className="feat-pill">{f}</span>)}
-        </div>
-        <button className="score-toggle" onClick={() => setOpen(!open)}>
-          {open ? "▲ Hide scores" : "▼ Score breakdown"}
-        </button>
+        <p className="aicard-expl">{rec.explanation}</p>
+        <div className="pcard-tags">{(rec.features||[]).slice(0,5).map(f=><span key={f} className="tag">{f}</span>)}</div>
+        <button className="score-btn" onClick={()=>setOpen(!open)}>{open?"▲ Hide scores":"▼ Score breakdown"}</button>
         {open && (
           <div className="score-bars">
-            {[
-              { label: "Semantic", val: sb.semantic, color: "#6366f1" },
-              { label: "Price fit", val: sb.price_fit, color: "#10b981" },
-              { label: "Features", val: sb.feature_match, color: "#f59e0b" },
-              { label: "Rating", val: sb.rating, color: "#ec4899" },
-            ].map(s => (
-              <div key={s.label} className="score-row">
-                <span>{s.label}</span>
-                <div className="bar-track"><div className="bar-fill" style={{ width: `${Math.min(s.val * 100, 100)}%`, background: s.color }} /></div>
-                <span>{(s.val * 100).toFixed(0)}%</span>
+            {[["Semantic",sb.semantic,"#6366f1"],["Price fit",sb.price_fit,"#10b981"],["Features",sb.feature_match,"#f59e0b"],["Rating",sb.rating,"#ec4899"]].map(([l,v,c])=>(
+              <div key={l} className="srow">
+                <span>{l}</span>
+                <div className="btrack"><div className="bfill" style={{ width:`${Math.min(v*100,100)}%`,background:c }}/></div>
+                <span>{(v*100).toFixed(0)}%</span>
               </div>
             ))}
-            <div className="final-score">Final score: {(sb.final_score * 100).toFixed(1)}</div>
+            <div className="final-sc">Final: {(sb.final_score*100).toFixed(1)}</div>
           </div>
         )}
       </div>
@@ -89,537 +94,589 @@ function AIResultCard({ rec, rank }) {
 }
 
 // ── Compare Card ──────────────────────────────────────────────────────────────
-function CompareCard({ entry, isWinner }) {
+function CmpCard({ e, isWinner }) {
   return (
-    <div className={`cmp-card${isWinner ? " cmp-winner" : ""}`}>
-      {isWinner && <div className="winner-label">🏆 Best pick</div>}
-      <h3 className="cmp-name">{entry.product_name}</h3>
+    <div className={`cmpcard${isWinner?" cmpwinner":""}`}>
+      {isWinner && <div className="winner-lbl">🏆 Best pick</div>}
+      <h3 className="cmp-name">{e.product_name}</h3>
       <div className="cmp-meta">
-        <span className="cmp-price">₹{entry.price?.toLocaleString()}</span>
-        <span className="cmp-rating">{stars(Math.round(entry.rating * 2) / 2)} {entry.rating}</span>
+        <span className="cmp-price">₹{Number(e.price||0).toLocaleString()}</span>
+        <span className="cmp-rat"><span className="st">{stars(Math.round((e.rating||0)*2)/2)}</span> {e.rating}</span>
       </div>
-      <span className={`fit-badge fit-${(entry.use_case_fit || "").toLowerCase()}`}>{entry.use_case_fit} fit</span>
-      <div className="cmp-section">
-        {entry.pros?.map((p, i) => <div key={i} className="cmp-pro">✓ {p}</div>)}
-      </div>
-      <div className="cmp-section">
-        {entry.cons?.map((c, i) => <div key={i} className="cmp-con">✗ {c}</div>)}
-      </div>
-      <p className="cmp-verdict">{entry.verdict}</p>
+      <span className={`fit fit-${(e.use_case_fit||"").toLowerCase()}`}>{e.use_case_fit} fit</span>
+      <div className="cmp-pros">{(e.pros||[]).map((p,i)=><div key={i}>✓ {p}</div>)}</div>
+      <div className="cmp-cons">{(e.cons||[]).map((c,i)=><div key={i}>✗ {c}</div>)}</div>
+      <p className="cmp-verdict">{e.verdict}</p>
+    </div>
+  );
+}
+
+// ── Low-stock banner (customer-facing) ───────────────────────────────────────
+function LowStockBanner({ items }) {
+  const [open, setOpen] = useState(true);
+  if (!items.length || !open) return null;
+  return (
+    <div className="ls-banner">
+      <span className="ls-icon">⚠</span>
+      <span className="ls-text">
+        <strong>{items.length} item{items.length>1?"s are":" is"} running low:</strong>{" "}
+        {items.slice(0,4).map(i=>`${i.name} (${i.stock} left)`).join(" · ")}
+        {items.length>4 && ` · +${items.length-4} more`}
+      </span>
+      <button className="ls-close" onClick={()=>setOpen(false)}>✕</button>
     </div>
   );
 }
 
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [page, setPage] = useState("home");  // home | search | compare | metrics
+  const [page, setPage]           = useState("home");
   const [mobileNav, setMobileNav] = useState(false);
 
-  // Catalog state
-  const [cat, setCat] = useState("All");
-  const [sort, setSort] = useState("rating");
-  const [search, setSearch] = useState("");
+  // Products from DB
+  const [products, setProducts]   = useState([]);
+  const [dbLoaded, setDbLoaded]   = useState(false);
+  const [lowStock, setLowStock]   = useState([]);
 
-  // AI Recommend state
-  const [aiQuery, setAiQuery] = useState("");
-  const [topN, setTopN] = useState(3);
+  // Catalog filters
+  const [cat, setCat]   = useState("All");
+  const [sort, setSort] = useState("rating");
+  const [q, setQ]       = useState("");
+
+  // AI search
+  const [aiQuery, setAiQuery]   = useState("");
+  const [topN, setTopN]         = useState(3);
   const [aiResult, setAiResult] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState("");
-
-  // Compare state
-  const [cmpNames, setCmpNames] = useState("");
-  const [cmpUseCase, setCmpUseCase] = useState("");
-  const [cmpResult, setCmpResult] = useState(null);
-  const [cmpLoading, setCmpLoading] = useState(false);
-  const [cmpError, setCmpError] = useState("");
-
-  // Metrics
-  const [metrics, setMetrics] = useState(null);
-  const [metricsLoading, setMetricsLoading] = useState(false);
-
+  const [aiError, setAiError]   = useState("");
   const searchRef = useRef(null);
 
+  // Compare
+  const [cmpNames, setCmpNames]     = useState("");
+  const [cmpUse, setCmpUse]         = useState("");
+  const [cmpResult, setCmpResult]   = useState(null);
+  const [cmpLoading, setCmpLoading] = useState(false);
+  const [cmpError, setCmpError]     = useState("");
+
+  // Metrics
+  const [metrics, setMetrics]         = useState(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
+  // Fetch products from DB on mount
+  const fetchProducts = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/products`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setProducts(data);
+      setLowStock(data.filter(p => p.stock !== undefined && p.stock <= LOW_STOCK_THRESHOLD));
+    } catch {}
+    setDbLoaded(true);
+  }, []);
+
+  useEffect(() => { fetchProducts(); }, [fetchProducts]);
+
+  // Also poll low-stock endpoint every 60s
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/products/low-stock`);
+        if (res.ok) setLowStock(await res.json());
+      } catch {}
+    };
+    const id = setInterval(poll, 60000);
+    return () => clearInterval(id);
+  }, []);
+
   const filtered = useMemo(() => {
-    let list = PRODUCTS;
-    if (cat !== "All") list = list.filter(p => p.category === cat);
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(p =>
-        p.name.toLowerCase().includes(q) ||
-        p.brand.toLowerCase().includes(q) ||
-        p.features.some(f => f.toLowerCase().includes(q))
+    let list = products;
+    if (cat !== "All") list = list.filter(p=>p.category===cat);
+    if (q.trim()) {
+      const lq = q.toLowerCase();
+      list = list.filter(p=>
+        p.name.toLowerCase().includes(lq) ||
+        p.brand.toLowerCase().includes(lq) ||
+        (p.features||[]).some(f=>f.toLowerCase().includes(lq))
       );
     }
-    if (sort === "rating") list = [...list].sort((a, b) => b.rating - a.rating);
-    if (sort === "price-asc") list = [...list].sort((a, b) => a.price - b.price);
-    if (sort === "price-desc") list = [...list].sort((a, b) => b.price - a.price);
+    if (sort==="rating")      list=[...list].sort((a,b)=>b.rating-a.rating);
+    if (sort==="price-asc")   list=[...list].sort((a,b)=>a.price-b.price);
+    if (sort==="price-desc")  list=[...list].sort((a,b)=>b.price-a.price);
+    if (sort==="stock-asc")   list=[...list].sort((a,b)=>(a.stock||0)-(b.stock||0));
     return list;
-  }, [cat, sort, search]);
+  }, [products, cat, sort, q]);
 
-  const handleAskAI = (name) => {
-    setAiQuery(`Tell me about ${name} and similar products`);
-    setPage("search");
-    setTimeout(() => searchRef.current?.focus(), 100);
-  };
+  const askAI = (name) => { setAiQuery(`Tell me about ${name} and similar products`); setPage("search"); setTimeout(()=>searchRef.current?.focus(),100); };
 
   const handleSearch = async () => {
     if (!aiQuery.trim()) return;
     setAiLoading(true); setAiError(""); setAiResult(null);
     try {
-      const res = await fetch(`${API_BASE}/recommend`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: aiQuery.trim(), top_n: topN }),
-      });
-      if (!res.ok) throw new Error((await res.json()).detail || "Request failed");
+      const res = await fetch(`${API_BASE}/recommend`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:aiQuery.trim(),top_n:topN})});
+      if (!res.ok) throw new Error((await res.json()).detail||"Failed");
       setAiResult(await res.json());
-    } catch (e) { setAiError(e.message); }
+    } catch(e){ setAiError(e.message); }
     setAiLoading(false);
   };
 
   const handleCompare = async () => {
-    const names = cmpNames.split(",").map(s => s.trim()).filter(Boolean);
-    if (names.length < 2) { setCmpError("Enter at least 2 product names, separated by commas."); return; }
-    if (!cmpUseCase.trim()) { setCmpError("Please describe the use case."); return; }
+    const names = cmpNames.split(",").map(s=>s.trim()).filter(Boolean);
+    if (names.length<2){setCmpError("Enter at least 2 names.");return;}
+    if (!cmpUse.trim()){setCmpError("Describe the use case.");return;}
     setCmpLoading(true); setCmpError(""); setCmpResult(null);
     try {
-      const res = await fetch(`${API_BASE}/compare`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ product_names: names, use_case: cmpUseCase.trim() }),
-      });
-      if (!res.ok) throw new Error((await res.json()).detail || "Request failed");
+      const res = await fetch(`${API_BASE}/compare`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product_names:names,use_case:cmpUse.trim()})});
+      if (!res.ok) throw new Error((await res.json()).detail||"Failed");
       setCmpResult(await res.json());
-    } catch (e) { setCmpError(e.message); }
+    } catch(e){ setCmpError(e.message); }
     setCmpLoading(false);
   };
 
   const handleMetrics = async () => {
     setMetricsLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/metrics`);
-      setMetrics(await res.json());
-    } catch {}
+    try { const res=await fetch(`${API_BASE}/metrics`); setMetrics(await res.json()); } catch {}
     setMetricsLoading(false);
   };
 
-  const navItems = [
-    { id: "home", label: "Shop" },
-    { id: "search", label: "AI Search" },
-    { id: "compare", label: "Compare" },
-    { id: "metrics", label: "Metrics" },
+  const NAV = [
+    {id:"home",label:"🛍️ Shop"},
+    {id:"search",label:"✦ AI Search"},
+    {id:"compare",label:"⚖️ Compare"},
+    {id:"metrics",label:"📊 Metrics"},
+    {id:"admin",label:"🔐 Admin"},
   ];
 
   return (
     <>
-      <style>{`
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        :root {
-          --bg: #0f0f0f;
-          --surface: #1a1a1a;
-          --surface2: #242424;
-          --border: rgba(255,255,255,0.08);
-          --border2: rgba(255,255,255,0.14);
-          --text: #f0f0ef;
-          --muted: #888884;
-          --muted2: #555552;
-          --accent: #7c6ef5;
-          --accent2: #9d92f7;
-          --green: #22c55e;
-          --radius: 12px;
-          --radius-sm: 7px;
-        }
-        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; min-height: 100vh; }
+    <style>{`
+      *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+      :root{
+        --bg:#0f0f0f;--sur:#1a1a1a;--sur2:#242424;
+        --bd:rgba(255,255,255,0.08);--bd2:rgba(255,255,255,0.14);
+        --tx:#f0f0ef;--mt:#88887f;--mt2:#55554f;
+        --ac:#7c6ef5;--ac2:#a89af8;--gr:#22c55e;--re:#ef4444;
+        --r:12px;--rs:7px;
+      }
+      body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh}
 
-        /* NAV */
-        nav { position: sticky; top: 0; z-index: 100; background: rgba(15,15,15,0.92); backdrop-filter: blur(12px); border-bottom: 0.5px solid var(--border); }
-        .nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-        .nav-logo { display: flex; align-items: center; gap: 10px; cursor: pointer; text-decoration: none; }
-        .logo-icon { width: 34px; height: 34px; border-radius: 9px; background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 17px; flex-shrink: 0; }
-        .logo-text { font-size: 18px; font-weight: 700; letter-spacing: -0.5px; color: var(--text); }
-        .logo-sub { font-size: 11px; color: var(--muted); margin-top: -2px; }
-        .nav-links { display: flex; gap: 4px; }
-        .nav-link { padding: 7px 14px; border-radius: var(--radius-sm); font-size: 14px; cursor: pointer; border: none; background: transparent; color: var(--muted); font-family: inherit; transition: all 0.15s; font-weight: 500; }
-        .nav-link:hover { color: var(--text); background: var(--surface2); }
-        .nav-link.active { color: var(--text); background: var(--surface2); }
-        .nav-ai-btn { padding: 8px 18px; background: var(--accent); color: #fff; border: none; border-radius: 20px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; transition: opacity 0.15s; white-space: nowrap; }
-        .nav-ai-btn:hover { opacity: 0.88; }
-        @media (max-width: 640px) {
-          .nav-links { display: none; }
-          .nav-links.open { display: flex; flex-direction: column; position: absolute; top: 60px; left: 0; right: 0; background: rgba(15,15,15,0.98); border-bottom: 0.5px solid var(--border); padding: 12px; gap: 4px; }
-          .hamburger { display: flex; flex-direction: column; gap: 4px; cursor: pointer; padding: 8px; border: none; background: transparent; }
-          .hamburger span { width: 20px; height: 2px; background: var(--text); border-radius: 2px; }
-        }
-        @media (min-width: 641px) { .hamburger { display: none; } }
+      /* NAV */
+      nav{position:sticky;top:0;z-index:100;background:rgba(15,15,15,0.93);backdrop-filter:blur(14px);border-bottom:.5px solid var(--bd)}
+      .nav-in{max-width:1200px;margin:0 auto;padding:0 1.5rem;height:60px;display:flex;align-items:center;gap:12px}
+      .logo{display:flex;align-items:center;gap:10px;cursor:pointer;flex-shrink:0}
+      .logo-ic{width:34px;height:34px;border-radius:9px;background:var(--ac);display:flex;align-items:center;justify-content:center;font-size:17px}
+      .logo-tx{font-size:18px;font-weight:700;letter-spacing:-.5px}
+      .logo-su{font-size:11px;color:var(--mt);margin-top:-2px}
+      .nav-links{display:flex;gap:2px;flex:1;justify-content:center}
+      .nl{padding:7px 13px;border-radius:var(--rs);font-size:13px;cursor:pointer;border:none;background:transparent;color:var(--mt);font-family:inherit;transition:all .15s;font-weight:500;white-space:nowrap}
+      .nl:hover{color:var(--tx);background:var(--sur2)}
+      .nl.active{color:var(--tx);background:var(--sur2)}
+      .nl.admin-nl{color:#f59e0b}
+      .nl.admin-nl.active{background:#f59e0b18}
+      .hamburger{display:none;flex-direction:column;gap:4px;cursor:pointer;padding:8px;border:none;background:transparent;margin-left:auto}
+      .hamburger span{width:20px;height:2px;background:var(--tx);border-radius:2px}
+      @media(max-width:700px){
+        .nav-links{display:none}
+        .nav-links.open{display:flex;flex-direction:column;position:absolute;top:60px;left:0;right:0;background:rgba(15,15,15,.98);border-bottom:.5px solid var(--bd);padding:12px;gap:2px;z-index:200}
+        .hamburger{display:flex}
+      }
 
-        /* HERO */
-        .hero { max-width: 1200px; margin: 0 auto; padding: 3.5rem 1.5rem 1.5rem; }
-        .hero-headline { font-size: clamp(28px, 5vw, 48px); font-weight: 800; letter-spacing: -1.5px; line-height: 1.1; margin-bottom: 12px; }
-        .hero-accent { color: var(--accent2); }
-        .hero-sub { font-size: 16px; color: var(--muted); max-width: 480px; line-height: 1.7; margin-bottom: 28px; }
-        .hero-searchbar { display: flex; gap: 10px; max-width: 600px; background: var(--surface); border: 1px solid var(--border2); border-radius: 50px; padding: 6px 6px 6px 20px; }
-        .hero-searchbar input { flex: 1; background: transparent; border: none; outline: none; font-size: 15px; color: var(--text); font-family: inherit; }
-        .hero-searchbar input::placeholder { color: var(--muted2); }
-        .hero-search-btn { padding: 10px 22px; background: var(--accent); color: #fff; border: none; border-radius: 50px; font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap; }
-        .hero-stats { display: flex; gap: 2rem; margin-top: 2.5rem; flex-wrap: wrap; }
-        .hero-stat span:first-child { font-size: 22px; font-weight: 700; display: block; }
-        .hero-stat span:last-child { font-size: 12px; color: var(--muted); }
+      /* LOW STOCK BANNER */
+      .ls-banner{display:flex;align-items:center;gap:12px;background:#f59e0b12;border-bottom:.5px solid #f59e0b40;padding:10px 1.5rem;font-size:13px;color:#fbbf24;flex-wrap:wrap}
+      .ls-icon{font-size:16px;flex-shrink:0}
+      .ls-text{flex:1}
+      .ls-close{background:transparent;border:none;color:#f59e0b;cursor:pointer;font-size:16px;flex-shrink:0;padding:0 4px}
 
-        /* CATEGORY STRIP */
-        .cat-strip { max-width: 1200px; margin: 0 auto; padding: 1.5rem 1.5rem 0; }
-        .cat-scroll { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
-        .cat-scroll::-webkit-scrollbar { display: none; }
-        .cat-pill { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: 50px; border: 0.5px solid var(--border2); background: var(--surface); cursor: pointer; font-size: 13px; color: var(--muted); white-space: nowrap; transition: all 0.15s; font-family: inherit; font-weight: 500; }
-        .cat-pill:hover { border-color: var(--accent); color: var(--text); }
-        .cat-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+      /* HERO */
+      .hero{max-width:1200px;margin:0 auto;padding:3rem 1.5rem 1rem}
+      .hero h1{font-size:clamp(26px,5vw,46px);font-weight:800;letter-spacing:-1.5px;line-height:1.1;margin-bottom:12px}
+      .hero-ac{color:var(--ac2)}
+      .hero-sub{font-size:15px;color:var(--mt);max-width:480px;line-height:1.7;margin-bottom:24px}
+      .hero-bar{display:flex;gap:8px;max-width:580px;background:var(--sur);border:1px solid var(--bd2);border-radius:50px;padding:5px 5px 5px 18px}
+      .hero-bar input{flex:1;background:transparent;border:none;outline:none;font-size:15px;color:var(--tx);font-family:inherit}
+      .hero-bar input::placeholder{color:var(--mt2)}
+      .hero-sbtn{padding:9px 20px;background:var(--ac);color:#fff;border:none;border-radius:50px;font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap}
+      .hero-stats{display:flex;gap:2rem;margin-top:2rem;flex-wrap:wrap}
+      .hstat span:first-child{font-size:20px;font-weight:700;display:block}
+      .hstat span:last-child{font-size:12px;color:var(--mt)}
 
-        /* PRODUCT GRID */
-        .catalog { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
-        .catalog-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 10px; }
-        .catalog-count { font-size: 14px; color: var(--muted); }
-        .sort-select { background: var(--surface); border: 0.5px solid var(--border2); border-radius: var(--radius-sm); padding: 8px 12px; color: var(--text); font-size: 13px; cursor: pointer; font-family: inherit; }
-        .product-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+      /* CATEGORY STRIP */
+      .catstrip{max-width:1200px;margin:0 auto;padding:1.25rem 1.5rem 0}
+      .catscroll{display:flex;gap:7px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+      .catscroll::-webkit-scrollbar{display:none}
+      .cpill{display:flex;align-items:center;gap:5px;padding:7px 15px;border-radius:50px;border:.5px solid var(--bd2);background:var(--sur);cursor:pointer;font-size:13px;color:var(--mt);white-space:nowrap;transition:all .15s;font-family:inherit;font-weight:500}
+      .cpill:hover{border-color:var(--ac);color:var(--tx)}
+      .cpill.active{background:var(--ac);border-color:var(--ac);color:#fff}
 
-        /* PRODUCT CARD */
-        .pcard { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); overflow: hidden; transition: transform 0.2s, border-color 0.2s; cursor: default; }
-        .pcard:hover { transform: translateY(-3px); border-color: var(--border2); }
-        .pcard-img { height: 140px; display: flex; align-items: center; justify-content: center; position: relative; }
-        .pcard-cat-icon { font-size: 52px; }
-        .pcard-cat-badge { position: absolute; top: 10px; right: 10px; font-size: 10px; color: #fff; padding: 3px 8px; border-radius: 20px; font-weight: 600; letter-spacing: 0.04em; }
-        .pcard-body { padding: 14px; }
-        .pcard-brand { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 3px; }
-        .pcard-name { font-size: 14px; font-weight: 600; line-height: 1.35; margin-bottom: 6px; }
-        .pcard-stars { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
-        .stars { color: #f59e0b; font-size: 12px; letter-spacing: 1px; }
-        .rating-num { font-size: 12px; color: var(--muted); }
-        .pcard-features { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
-        .feat-pill { font-size: 10px; padding: 2px 7px; border-radius: 12px; background: var(--surface2); color: var(--muted); border: 0.5px solid var(--border); }
-        .pcard-desc { font-size: 12px; color: var(--muted); line-height: 1.5; margin-bottom: 12px; }
-        .pcard-footer { display: flex; justify-content: space-between; align-items: center; }
-        .pcard-price { font-size: 16px; font-weight: 700; color: var(--text); }
-        .btn-ai { padding: 6px 14px; background: transparent; border: 0.5px solid var(--accent); color: var(--accent2); border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; transition: all 0.15s; }
-        .btn-ai:hover { background: var(--accent); color: #fff; }
+      /* CATALOG */
+      .catalog{max-width:1200px;margin:0 auto;padding:1.25rem 1.5rem}
+      .toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.25rem;flex-wrap:wrap;gap:10px}
+      .tcount{font-size:13px;color:var(--mt)}
+      .tright{display:flex;gap:8px;flex-wrap:wrap}
+      .t-input{background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--rs);padding:8px 12px;color:var(--tx);font-size:13px;font-family:inherit;outline:none;transition:border-color .15s;width:170px}
+      .t-input:focus{border-color:var(--ac)}
+      .t-select{background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--rs);padding:8px 12px;color:var(--tx);font-size:13px;cursor:pointer;font-family:inherit}
+      .pgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:15px}
 
-        /* PAGE WRAPPER */
-        .page { max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
-        .page-title { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; }
-        .page-sub { font-size: 14px; color: var(--muted); margin-bottom: 1.75rem; }
+      /* PRODUCT CARD */
+      .pcard{background:var(--sur);border:.5px solid var(--bd);border-radius:var(--r);overflow:hidden;transition:transform .2s,border-color .2s}
+      .pcard:hover{transform:translateY(-3px);border-color:var(--bd2)}
+      .pcard-low{border-color:#f59e0b44}
+      .pcard-img{height:135px;display:flex;align-items:center;justify-content:center;position:relative}
+      .pcard-emoji{font-size:50px}
+      .pcard-cat{position:absolute;top:10px;right:10px;font-size:10px;color:#fff;padding:2px 8px;border-radius:20px;font-weight:600}
+      .pcard-low-flag{position:absolute;top:10px;left:10px;font-size:10px;background:#f59e0b;color:#000;padding:2px 7px;border-radius:20px;font-weight:700}
+      .pcard-body{padding:13px}
+      .pcard-brand{font-size:11px;color:var(--mt);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+      .pcard-name{font-size:14px;font-weight:600;line-height:1.3;margin-bottom:5px}
+      .pcard-stars{display:flex;align-items:center;gap:5px;margin-bottom:7px}
+      .st{color:#f59e0b;font-size:12px;letter-spacing:1px}
+      .rn{font-size:12px;color:var(--mt)}
+      .pcard-tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px}
+      .tag{font-size:10px;padding:2px 7px;border-radius:12px;background:var(--sur2);color:var(--mt);border:.5px solid var(--bd)}
+      .pcard-desc{font-size:12px;color:var(--mt);line-height:1.5;margin-bottom:8px}
+      .pcard-foot{display:flex;justify-content:space-between;align-items:center;margin-top:10px}
+      .pcard-price{font-size:16px;font-weight:700}
+      .btn-ai{padding:6px 13px;background:transparent;border:.5px solid var(--ac);color:var(--ac2);border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+      .btn-ai:hover{background:var(--ac);color:#fff}
 
-        /* SEARCH PAGE */
-        .search-box { background: var(--surface); border: 0.5px solid var(--border2); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 1.5rem; }
-        .search-row { display: flex; gap: 10px; align-items: stretch; }
-        .search-input { flex: 1; background: var(--surface2); border: 0.5px solid var(--border2); border-radius: var(--radius-sm); padding: 11px 14px; font-size: 15px; color: var(--text); font-family: inherit; outline: none; transition: border-color 0.15s; }
-        .search-input:focus { border-color: var(--accent); }
-        .topn-select { background: var(--surface2); border: 0.5px solid var(--border2); border-radius: var(--radius-sm); padding: 11px 12px; color: var(--text); font-size: 14px; cursor: pointer; font-family: inherit; }
-        .primary-btn { padding: 11px 24px; background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap; transition: opacity 0.15s; }
-        .primary-btn:hover { opacity: 0.88; }
-        .primary-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+      /* STOCK PILLS */
+      .spill{font-size:10px;font-weight:700;padding:3px 8px;border-radius:12px;display:inline-block;margin-bottom:6px}
+      .spill.low{background:#f59e0b18;color:#fbbf24;border:.5px solid #f59e0b40}
+      .spill.out{background:#ef444418;color:#f87171;border:.5px solid #ef444440}
 
-        /* AI CARDS */
-        .ai-card { display: flex; gap: 0; background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 12px; animation: slideUp 0.3s ease both; }
-        @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-        .ai-card-rank { width: 44px; display: flex; align-items: center; justify-content: center; background: var(--accent); color: #fff; font-size: 14px; font-weight: 700; flex-shrink: 0; }
-        .ai-card-main { flex: 1; padding: 1.1rem 1.25rem; min-width: 0; }
-        .ai-card-header { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
-        .ai-cat-badge { font-size: 10px; color: #fff; padding: 2px 8px; border-radius: 12px; font-weight: 600; display: inline-block; margin-bottom: 4px; }
-        .ai-name { font-size: 16px; font-weight: 700; line-height: 1.3; }
-        .ai-brand { font-size: 12px; color: var(--muted); margin-top: 2px; }
-        .ai-right { text-align: right; flex-shrink: 0; }
-        .ai-price { font-size: 18px; font-weight: 700; color: var(--accent2); }
-        .ai-stars { font-size: 12px; color: var(--muted); margin-top: 3px; }
-        .ai-stars .stars { color: #f59e0b; }
-        .ai-explanation { font-size: 14px; line-height: 1.65; color: #ccc; margin: 8px 0 10px; }
-        .ai-features { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
-        .score-toggle { background: transparent; border: 0.5px solid var(--border2); border-radius: var(--radius-sm); padding: 5px 12px; font-size: 12px; color: var(--muted); cursor: pointer; font-family: inherit; transition: background 0.15s; }
-        .score-toggle:hover { background: var(--surface2); }
-        .score-bars { margin-top: 10px; border-top: 0.5px solid var(--border); padding-top: 10px; }
-        .score-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
-        .score-row > span:first-child { width: 70px; flex-shrink: 0; }
-        .score-row > span:last-child { width: 32px; text-align: right; flex-shrink: 0; }
-        .bar-track { flex: 1; height: 4px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
-        .bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
-        .final-score { font-size: 13px; font-weight: 600; color: var(--accent2); margin-top: 8px; }
+      /* PAGE */
+      .page{max-width:860px;margin:0 auto;padding:2rem 1.5rem 4rem}
+      .pg-title{font-size:24px;font-weight:700;letter-spacing:-.5px;margin-bottom:6px}
+      .pg-sub{font-size:14px;color:var(--mt);margin-bottom:1.75rem}
 
-        /* RESULT META */
-        .result-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 16px; font-size: 13px; color: var(--muted); }
-        .cache-pill { font-size: 11px; padding: 3px 9px; border-radius: 12px; background: #22c55e18; color: #4ade80; }
-        .miss-pill { background: #6366f118; color: #a5b4fc; }
+      /* SEARCH */
+      .sbox{background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--r);padding:1.25rem;margin-bottom:1.5rem}
+      .srow{display:flex;gap:10px}
+      .sinput{flex:1;background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);padding:11px 14px;font-size:15px;color:var(--tx);font-family:inherit;outline:none;transition:border-color .15s}
+      .sinput:focus{border-color:var(--ac)}
+      .ssel{background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);padding:11px 12px;color:var(--tx);font-size:14px;cursor:pointer;font-family:inherit}
+      .pbtn{padding:11px 22px;background:var(--ac);color:#fff;border:none;border-radius:var(--rs);font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;transition:opacity .15s}
+      .pbtn:hover{opacity:.88}
+      .pbtn:disabled{opacity:.45;cursor:not-allowed}
+      .err{background:#ef444412;color:#f87171;font-size:13px;padding:10px 14px;border-radius:var(--rs);margin-top:10px}
+      .rmeta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px;font-size:13px;color:var(--mt)}
+      .cpill2{font-size:11px;padding:3px 9px;border-radius:12px}
+      .hit{background:#22c55e18;color:#4ade80}
+      .miss{background:#6366f118;color:#a5b4fc}
 
-        /* COMPARE */
-        .cmp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
-        .cmp-card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1.25rem; }
-        .cmp-winner { border: 1.5px solid var(--accent); }
-        .winner-label { font-size: 12px; font-weight: 600; color: var(--accent2); margin-bottom: 8px; }
-        .cmp-name { font-size: 15px; font-weight: 700; margin-bottom: 8px; line-height: 1.3; }
-        .cmp-meta { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-        .cmp-price { font-size: 17px; font-weight: 700; color: var(--accent2); }
-        .cmp-rating { font-size: 12px; color: var(--muted); }
-        .fit-badge { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 12px; display: inline-block; margin-bottom: 10px; }
-        .fit-high { background: #22c55e18; color: #4ade80; }
-        .fit-medium { background: #f59e0b18; color: #fbbf24; }
-        .fit-low { background: #ef444418; color: #f87171; }
-        .cmp-section { margin-bottom: 6px; }
-        .cmp-pro { font-size: 13px; color: #4ade80; margin-bottom: 3px; }
-        .cmp-con { font-size: 13px; color: #f87171; margin-bottom: 3px; }
-        .cmp-verdict { font-size: 13px; color: var(--muted); margin-top: 10px; font-style: italic; border-top: 0.5px solid var(--border); padding-top: 10px; }
-        .cmp-summary { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 14px; font-size: 14px; line-height: 1.7; color: #ccc; }
-        .cmp-winner-note { font-size: 13px; color: var(--muted); margin-top: 10px; border-top: 0.5px solid var(--border); padding-top: 10px; }
+      /* AI CARD */
+      .aicard{display:flex;background:var(--sur);border:.5px solid var(--bd);border-radius:var(--r);overflow:hidden;margin-bottom:12px;animation:su .3s ease both}
+      @keyframes su{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+      .aicard-rank{width:44px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;font-weight:700;flex-shrink:0}
+      .aicard-body{flex:1;padding:1.1rem 1.25rem;min-width:0}
+      .aicard-top{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;flex-wrap:wrap}
+      .aicat{font-size:10px;color:#fff;padding:2px 8px;border-radius:12px;font-weight:600;display:inline-block;margin-bottom:4px}
+      .aicard-name{font-size:16px;font-weight:700;line-height:1.3}
+      .aicard-brand{font-size:12px;color:var(--mt);margin-top:2px}
+      .aicard-right{text-align:right;flex-shrink:0}
+      .aicard-price{font-size:18px;font-weight:700;color:var(--ac2)}
+      .aicard-stars{font-size:12px;color:var(--mt);margin-top:3px}
+      .aicard-expl{font-size:14px;line-height:1.65;color:#ccc;margin:8px 0 10px}
+      .score-btn{background:transparent;border:.5px solid var(--bd2);border-radius:var(--rs);padding:5px 12px;font-size:12px;color:var(--mt);cursor:pointer;font-family:inherit}
+      .score-btn:hover{background:var(--sur2)}
+      .score-bars{margin-top:10px;border-top:.5px solid var(--bd);padding-top:10px}
+      .srow2{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;color:var(--mt)}
+      .srow2>span:first-child{width:70px;flex-shrink:0}
+      .srow2>span:last-child{width:32px;text-align:right;flex-shrink:0}
+      .btrack{flex:1;height:4px;background:var(--sur2);border-radius:4px;overflow:hidden}
+      .bfill{height:100%;border-radius:4px;transition:width .5s}
+      .final-sc{font-size:13px;font-weight:600;color:var(--ac2);margin-top:8px}
 
-        /* METRICS */
-        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-top: 1.25rem; }
-        .metric-card { background: var(--surface); border: 0.5px solid var(--border); border-radius: var(--radius); padding: 1rem 1.1rem; }
-        .metric-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
-        .metric-value { font-size: 24px; font-weight: 700; }
+      /* COMPARE */
+      .cmpgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
+      .cmpcard{background:var(--sur);border:.5px solid var(--bd);border-radius:var(--r);padding:1.25rem}
+      .cmpwinner{border:1.5px solid var(--ac)}
+      .winner-lbl{font-size:12px;font-weight:600;color:var(--ac2);margin-bottom:8px}
+      .cmp-name{font-size:15px;font-weight:700;margin-bottom:8px;line-height:1.3}
+      .cmp-meta{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+      .cmp-price{font-size:17px;font-weight:700;color:var(--ac2)}
+      .cmp-rat{font-size:12px;color:var(--mt)}
+      .fit{font-size:11px;font-weight:600;padding:3px 9px;border-radius:12px;display:inline-block;margin-bottom:10px}
+      .fit-high{background:#22c55e18;color:#4ade80}
+      .fit-medium{background:#f59e0b18;color:#fbbf24}
+      .fit-low{background:#ef444418;color:#f87171}
+      .cmp-pros{font-size:13px;color:#4ade80;margin-bottom:4px}
+      .cmp-cons{font-size:13px;color:#f87171;margin-bottom:4px}
+      .cmp-verdict{font-size:13px;color:var(--mt);font-style:italic;border-top:.5px solid var(--bd);padding-top:10px;margin-top:8px}
+      .cmp-summary{background:var(--sur);border:.5px solid var(--bd);border-radius:var(--r);padding:1.25rem;margin-bottom:14px;font-size:14px;line-height:1.7;color:#ccc}
+      .cmp-winner-note{font-size:13px;color:var(--mt);margin-top:10px;border-top:.5px solid var(--bd);padding-top:10px}
 
-        /* MISC */
-        .field-group { margin-bottom: 1rem; }
-        label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 6px; font-weight: 500; }
-        .text-input { width: 100%; background: var(--surface2); border: 0.5px solid var(--border2); border-radius: var(--radius-sm); padding: 11px 14px; font-size: 14px; color: var(--text); font-family: inherit; outline: none; transition: border-color 0.15s; }
-        .text-input:focus { border-color: var(--accent); }
-        textarea.text-input { resize: vertical; min-height: 68px; }
-        .error-box { background: #ef444412; color: #f87171; font-size: 13px; padding: 10px 14px; border-radius: var(--radius-sm); margin-top: 10px; }
-        .hint { font-size: 12px; color: var(--muted2); margin-top: 4px; }
-        .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; margin-right: 6px; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .empty-state { text-align: center; padding: 4rem 1rem; color: var(--muted); }
-        .empty-state .big { font-size: 48px; margin-bottom: 12px; }
+      /* METRICS */
+      .mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:12px;margin-top:1.25rem}
+      .mcard{background:var(--sur);border:.5px solid var(--bd);border-radius:var(--r);padding:1rem 1.1rem}
+      .mlbl{font-size:11px;color:var(--mt);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+      .mval{font-size:24px;font-weight:700}
 
-        /* FOOTER */
-        footer { border-top: 0.5px solid var(--border); padding: 2rem 1.5rem; text-align: center; color: var(--muted2); font-size: 13px; }
-        .footer-inner { max-width: 1200px; margin: 0 auto; }
-        .tech-badges { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-        .tech-badge { font-size: 11px; padding: 3px 10px; border-radius: 12px; border: 0.5px solid var(--border2); color: var(--muted); }
-      `}</style>
+      /* ADMIN shell styles */
+      .adm-shell{max-width:1200px;margin:0 auto;padding:2rem 1.5rem 4rem}
+      .adm-topbar{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:1rem;flex-wrap:wrap}
+      .adm-title{font-size:24px;font-weight:700;letter-spacing:-.5px}
+      .adm-sub{font-size:14px;color:var(--mt);margin-top:4px}
+      .adm-low-count{color:#fbbf24;font-weight:600}
+      .adm-alert-strip{display:flex;align-items:center;gap:12px;background:#f59e0b12;border:.5px solid #f59e0b40;border-radius:var(--rs);padding:10px 14px;font-size:13px;color:#fbbf24;margin-bottom:1rem;flex-wrap:wrap}
+      .adm-alert-btn{background:#f59e0b;color:#000;border:none;border-radius:var(--rs);padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+      .adm-toolbar{display:flex;gap:10px;margin-bottom:1rem;flex-wrap:wrap;align-items:center}
+      .adm-search{flex:1;min-width:180px;background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--rs);padding:9px 13px;color:var(--tx);font-size:14px;font-family:inherit;outline:none}
+      .adm-search:focus{border-color:var(--ac)}
+      .adm-select{background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--rs);padding:9px 12px;color:var(--tx);font-size:13px;cursor:pointer;font-family:inherit}
+      .adm-count{font-size:13px;color:var(--mt);white-space:nowrap}
+      .adm-table-wrap{overflow-x:auto;border:.5px solid var(--bd);border-radius:var(--r)}
+      .adm-table{width:100%;border-collapse:collapse;font-size:13px}
+      .adm-table th{background:var(--sur2);padding:10px 14px;text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mt);white-space:nowrap;border-bottom:.5px solid var(--bd)}
+      .adm-table td{padding:10px 14px;border-bottom:.5px solid var(--bd);vertical-align:middle}
+      .adm-table tr:last-child td{border-bottom:none}
+      .adm-table tr:hover td{background:var(--sur2)}
+      .row-low td{background:#f59e0b06}
+      .adm-id{font-size:12px;color:var(--mt);font-family:monospace}
+      .adm-pname{font-weight:600;font-size:13px}
+      .adm-brand{font-size:11px;color:var(--mt)}
+      .adm-cat{font-size:11px;background:var(--sur2);border:.5px solid var(--bd2);border-radius:12px;padding:2px 8px;color:var(--mt)}
+      .adm-badge{font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;display:inline-block}
+      .adm-badge.ok{background:#22c55e18;color:#4ade80}
+      .adm-badge.low{background:#f59e0b18;color:#fbbf24}
+      .adm-badge.out{background:#ef444418;color:#f87171}
+      .stock-controls{display:flex;gap:5px;align-items:center}
+      .qty-input{width:56px;background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);padding:6px 8px;color:var(--tx);font-size:13px;font-family:inherit;outline:none;text-align:center}
+      .adm-btn{padding:7px 13px;border:none;border-radius:var(--rs);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;white-space:nowrap;transition:opacity .15s}
+      .adm-btn:disabled{opacity:.45;cursor:not-allowed}
+      .adm-btn.green{background:#22c55e;color:#000}
+      .adm-btn.red{background:#ef4444;color:#fff}
+      .adm-btn.gray{background:var(--sur2);color:var(--tx);border:.5px solid var(--bd2)}
+      .adm-btn.wide{width:100%;padding:11px}
+      .adm-btn.green:hover{opacity:.88}
+      .adm-icon-btn{background:transparent;border:.5px solid var(--bd2);border-radius:var(--rs);padding:5px 9px;cursor:pointer;font-size:14px;transition:background .15s}
+      .adm-icon-btn:hover{background:var(--sur2)}
+      .adm-loading{padding:2rem;text-align:center;color:var(--mt)}
+      .adm-error{background:#ef444412;color:#f87171;font-size:13px;padding:10px 14px;border-radius:var(--rs);margin-top:10px}
+      .adm-login{display:flex;align-items:center;justify-content:center;min-height:60vh;padding:2rem}
+      .adm-login-card{background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--r);padding:2.5rem;width:100%;max-width:380px;text-align:center}
+      .adm-login-icon{font-size:40px;margin-bottom:1rem}
+      .adm-login-card h2{font-size:20px;font-weight:700;margin-bottom:6px}
+      .adm-login-card p{font-size:14px;color:var(--mt);margin-bottom:1.5rem}
+      .adm-key-input{width:100%;background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);padding:11px 14px;font-size:14px;color:var(--tx);font-family:inherit;outline:none;margin-bottom:10px;text-align:center}
+      .adm-key-input:focus{border-color:var(--ac)}
+      /* MODAL */
+      .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;display:flex;align-items:center;justify-content:center;padding:1rem}
+      .modal{background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--r);width:100%;max-width:560px;max-height:90vh;display:flex;flex-direction:column}
+      .modal-header{display:flex;justify-content:space-between;align-items:center;padding:1.25rem 1.5rem;border-bottom:.5px solid var(--bd)}
+      .modal-header h2{font-size:18px;font-weight:700}
+      .modal-close{background:transparent;border:none;color:var(--mt);font-size:20px;cursor:pointer;padding:0 4px}
+      .modal-body{padding:1.25rem 1.5rem;overflow-y:auto;flex:1}
+      .modal-footer{padding:1rem 1.5rem;border-top:.5px solid var(--bd);display:flex;justify-content:flex-end;gap:8px}
+      .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+      .form-field{display:flex;flex-direction:column;gap:5px}
+      .form-field.full{margin-bottom:12px}
+      .form-field label{font-size:12px;color:var(--mt);font-weight:500}
+      .form-field input,.form-field select,.form-field textarea{background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);padding:9px 12px;color:var(--tx);font-size:13px;font-family:inherit;outline:none;transition:border-color .15s}
+      .form-field input:focus,.form-field select:focus,.form-field textarea:focus{border-color:var(--ac)}
+      .form-field textarea{resize:vertical}
+
+      /* MISC */
+      .empty{text-align:center;padding:4rem 1rem;color:var(--mt)}
+      .empty .big{font-size:48px;margin-bottom:12px}
+      .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:6px}
+      @keyframes spin{to{transform:rotate(360deg)}}
+      footer{border-top:.5px solid var(--bd);padding:2rem 1.5rem;text-align:center;color:var(--mt2);font-size:13px}
+      .foot-in{max-width:1200px;margin:0 auto}
+      .tbadges{display:flex;justify-content:center;gap:7px;flex-wrap:wrap;margin-top:10px}
+      .tbadge{font-size:11px;padding:3px 10px;border-radius:12px;border:.5px solid var(--bd2);color:var(--mt)}
+    `}</style>
 
       {/* NAV */}
       <nav>
-        <div className="nav-inner">
-          <div className="nav-logo" onClick={() => { setPage("home"); setMobileNav(false); }}>
-            <div className="logo-icon">🛒</div>
-            <div>
-              <div className="logo-text">ShopLens</div>
-              <div className="logo-sub">RAG Shopping Assistant</div>
-            </div>
+        <div className="nav-in">
+          <div className="logo" onClick={()=>{setPage("home");setMobileNav(false)}}>
+            <div className="logo-ic">🛒</div>
+            <div><div className="logo-tx">ShopLens</div><div className="logo-su">RAG Shopping</div></div>
           </div>
-          <div className={`nav-links${mobileNav ? " open" : ""}`}>
-            {navItems.map(n => (
-              <button key={n.id} className={`nav-link${page === n.id ? " active" : ""}`}
-                onClick={() => { setPage(n.id); setMobileNav(false); }}>
+          <div className={`nav-links${mobileNav?" open":""}`}>
+            {NAV.map(n=>(
+              <button key={n.id} className={`nl${page===n.id?" active":""}${n.id==="admin"?" admin-nl":""}`}
+                onClick={()=>{setPage(n.id);setMobileNav(false)}}>
                 {n.label}
               </button>
             ))}
           </div>
-          <button className="nav-ai-btn" onClick={() => { setPage("search"); setMobileNav(false); }}>
-            ✦ Ask AI
-          </button>
-          <button className="hamburger" onClick={() => setMobileNav(!mobileNav)} aria-label="Menu">
-            <span /><span /><span />
+          <button className="hamburger" onClick={()=>setMobileNav(!mobileNav)} aria-label="Menu">
+            <span/><span/><span/>
           </button>
         </div>
       </nav>
 
-      {/* HOME PAGE */}
-      {page === "home" && (
+      {/* LOW STOCK BANNER — shown on non-admin pages */}
+      {page !== "admin" && <LowStockBanner items={lowStock} />}
+
+      {/* ── HOME ── */}
+      {page==="home" && (
         <>
           <div className="hero">
-            <h1 className="hero-headline">
-              Shop smarter with<br /><span className="hero-accent">AI-powered search</span>
-            </h1>
-            <p className="hero-sub">
-              Natural language recommendations using hybrid RAG retrieval — just describe what you need.
-            </p>
-            <div className="hero-searchbar">
-              <input
-                placeholder='Try "waterproof hiking boots under ₹2000"…'
-                onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { setAiQuery(e.target.value); setPage("search"); } }}
-                onChange={e => setAiQuery(e.target.value)}
-                value={aiQuery}
-              />
-              <button className="hero-search-btn" onClick={() => { if (aiQuery.trim()) setPage("search"); }}>
-                Search with AI →
-              </button>
+            <h1>Shop smarter with<br/><span className="hero-ac">AI-powered search</span></h1>
+            <p className="hero-sub">Describe what you need in plain English — hybrid RAG finds the best match.</p>
+            <div className="hero-bar">
+              <input placeholder='Try "waterproof hiking boots under ₹2000"…'
+                value={aiQuery} onChange={e=>setAiQuery(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter"&&e.target.value.trim())setPage("search")}} />
+              <button className="hero-sbtn" onClick={()=>{if(aiQuery.trim())setPage("search")}}>Search with AI →</button>
             </div>
             <div className="hero-stats">
-              <div className="hero-stat"><span>40</span><span>Products</span></div>
-              <div className="hero-stat"><span>10</span><span>Categories</span></div>
-              <div className="hero-stat"><span>BM25 + FAISS</span><span>Hybrid retrieval</span></div>
-              <div className="hero-stat"><span>RRF</span><span>Rank fusion</span></div>
+              <div className="hstat"><span>{products.length||40}</span><span>Products</span></div>
+              <div className="hstat"><span>10</span><span>Categories</span></div>
+              <div className="hstat"><span>BM25 + FAISS</span><span>Hybrid retrieval</span></div>
+              <div className="hstat"><span>RRF</span><span>Rank fusion</span></div>
             </div>
           </div>
 
-          <div className="cat-strip">
-            <div className="cat-scroll">
-              {CATEGORIES.map(c => (
-                <button key={c} className={`cat-pill${cat === c ? " active" : ""}`} onClick={() => setCat(c)}>
-                  {CATEGORY_ICONS[c] || "📦"} {c}
+          <div className="catstrip">
+            <div className="catscroll">
+              {CATEGORIES.map(c=>(
+                <button key={c} className={`cpill${cat===c?" active":""}`} onClick={()=>setCat(c)}>
+                  {CAT_ICON[c]} {c}
                 </button>
               ))}
             </div>
           </div>
 
           <div className="catalog">
-            <div className="catalog-toolbar">
-              <span className="catalog-count">{filtered.length} products{cat !== "All" ? ` in ${cat}` : ""}{search ? ` matching "${search}"` : ""}</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input
-                  className="text-input" style={{ width: 180, padding: "7px 12px", fontSize: 13 }}
-                  placeholder="Filter products…" value={search}
-                  onChange={e => setSearch(e.target.value)}
-                />
-                <select className="sort-select" value={sort} onChange={e => setSort(e.target.value)}>
+            <div className="toolbar">
+              <span className="tcount">{filtered.length} products{cat!=="All"?` in ${cat}`:""}{q?` for "${q}"`:""}</span>
+              <div className="tright">
+                <input className="t-input" placeholder="Filter…" value={q} onChange={e=>setQ(e.target.value)} />
+                <select className="t-select" value={sort} onChange={e=>setSort(e.target.value)}>
                   <option value="rating">Top rated</option>
-                  <option value="price-asc">Price: low to high</option>
-                  <option value="price-desc">Price: high to low</option>
+                  <option value="price-asc">Price: low → high</option>
+                  <option value="price-desc">Price: high → low</option>
+                  <option value="stock-asc">Stock: low → high</option>
                 </select>
               </div>
             </div>
-            {filtered.length === 0 ? (
-              <div className="empty-state">
-                <div className="big">🔍</div>
-                <p>No products match your filter.</p>
-              </div>
+            {!dbLoaded ? (
+              <div className="empty"><div className="big">⏳</div><p>Loading products from database…</p></div>
+            ) : filtered.length===0 ? (
+              <div className="empty"><div className="big">🔍</div><p>No products match your filter.</p></div>
             ) : (
-              <div className="product-grid">
-                {filtered.map(p => <ProductCard key={p.id} p={p} onAskAI={handleAskAI} />)}
+              <div className="pgrid">
+                {filtered.map(p=><ProductCard key={p.id} p={p} onAskAI={askAI}/>)}
               </div>
             )}
           </div>
         </>
       )}
 
-      {/* AI SEARCH PAGE */}
-      {page === "search" && (
+      {/* ── AI SEARCH ── */}
+      {page==="search" && (
         <div className="page">
-          <h1 className="page-title">AI Search</h1>
-          <p className="page-sub">Describe what you need in plain English — our RAG pipeline finds the best matches.</p>
-          <div className="search-box">
-            <div className="search-row">
-              <input
-                ref={searchRef}
-                className="search-input"
-                value={aiQuery}
-                onChange={e => setAiQuery(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleSearch()}
-                placeholder='e.g. "waterproof camping gear under ₹1500"'
-              />
-              <select className="topn-select" value={topN} onChange={e => setTopN(Number(e.target.value))}>
-                {[1,2,3,4,5].map(n => <option key={n} value={n}>Top {n}</option>)}
+          <h1 className="pg-title">AI Search</h1>
+          <p className="pg-sub">Describe what you need — RAG pipeline handles the rest.</p>
+          <div className="sbox">
+            <div className="srow">
+              <input ref={searchRef} className="sinput" value={aiQuery}
+                onChange={e=>setAiQuery(e.target.value)}
+                onKeyDown={e=>e.key==="Enter"&&handleSearch()}
+                placeholder='e.g. "waterproof camping gear under ₹1500"' />
+              <select className="ssel" value={topN} onChange={e=>setTopN(Number(e.target.value))}>
+                {[1,2,3,4,5].map(n=><option key={n} value={n}>Top {n}</option>)}
               </select>
-              <button className="primary-btn" onClick={handleSearch} disabled={aiLoading || !aiQuery.trim()}>
-                {aiLoading ? <><span className="spinner" />Searching…</> : "Search ✦"}
+              <button className="pbtn" onClick={handleSearch} disabled={aiLoading||!aiQuery.trim()}>
+                {aiLoading?<><span className="spinner"/>Searching…</>:"Search ✦"}
               </button>
             </div>
-            {aiError && <div className="error-box">{aiError}</div>}
+            {aiError && <div className="err">{aiError}</div>}
           </div>
-
           {aiResult && (
             <>
-              <div className="result-meta">
+              <div className="rmeta">
                 <span>Results for: <strong>{aiResult.query}</strong></span>
-                <span className={`cache-pill${aiResult.cache_hit ? "" : " miss-pill"}`}>
-                  {aiResult.cache_hit ? "💾 cache hit" : "🔄 fresh extraction"}
+                <span className={`cpill2 ${aiResult.cache_hit?"hit":"miss"}`}>
+                  {aiResult.cache_hit?"💾 cache hit":"🔄 fresh"}
                 </span>
-                {aiResult.extracted_constraints.max_price && <span>Budget: ₹{aiResult.extracted_constraints.max_price}</span>}
-                {aiResult.extracted_constraints.category && <span>Category: {aiResult.extracted_constraints.category}</span>}
+                {aiResult.extracted_constraints?.max_price && <span>Budget: ₹{aiResult.extracted_constraints.max_price}</span>}
               </div>
-              {aiResult.recommendations.map((r, i) => <AIResultCard key={r.id} rec={r} rank={i} />)}
+              {aiResult.recommendations.map((r,i)=><AICard key={r.id} rec={r} rank={i}/>)}
             </>
           )}
-
-          {!aiResult && !aiLoading && (
-            <div className="empty-state">
-              <div className="big">✦</div>
-              <p>Enter a query above to get AI-powered recommendations.</p>
-            </div>
-          )}
+          {!aiResult&&!aiLoading&&<div className="empty"><div className="big">✦</div><p>Enter a query to get AI recommendations.</p></div>}
         </div>
       )}
 
-      {/* COMPARE PAGE */}
-      {page === "compare" && (
+      {/* ── COMPARE ── */}
+      {page==="compare" && (
         <div className="page">
-          <h1 className="page-title">Compare Products</h1>
-          <p className="page-sub">Compare 2–4 products side by side for your specific use case.</p>
-          <div className="search-box">
-            <div className="field-group">
-              <label>Product names (comma-separated)</label>
-              <input className="text-input" value={cmpNames} onChange={e => setCmpNames(e.target.value)}
+          <h1 className="pg-title">Compare Products</h1>
+          <p className="pg-sub">Compare 2–4 products side by side for your use case.</p>
+          <div className="sbox">
+            <div style={{marginBottom:12}}>
+              <label style={{fontSize:13,color:"var(--mt)",display:"block",marginBottom:6,fontWeight:500}}>Product names (comma-separated)</label>
+              <input className="sinput" style={{width:"100%"}} value={cmpNames} onChange={e=>setCmpNames(e.target.value)}
                 placeholder="e.g. AquaShield Hiking Boots, CloudWalk Running Shoes" />
-              <p className="hint">Use partial names — we'll match them from the catalog</p>
+              <p style={{fontSize:12,color:"var(--mt2)",marginTop:4}}>Use partial names — we'll match them from the catalog</p>
             </div>
-            <div className="field-group" style={{ marginBottom: 0 }}>
-              <label>Use case / intent</label>
-              <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                <textarea className="text-input" value={cmpUseCase} onChange={e => setCmpUseCase(e.target.value)}
-                  placeholder="e.g. monsoon trekking in the Himalayas" style={{ flex: 1 }} />
-                <button className="primary-btn" onClick={handleCompare} disabled={cmpLoading} style={{ flexShrink: 0, marginTop: 0 }}>
-                  {cmpLoading ? <><span className="spinner" />Comparing…</> : "Compare ⚖️"}
+            <div>
+              <label style={{fontSize:13,color:"var(--mt)",display:"block",marginBottom:6,fontWeight:500}}>Use case</label>
+              <div className="srow">
+                <input className="sinput" value={cmpUse} onChange={e=>setCmpUse(e.target.value)}
+                  placeholder="e.g. monsoon trekking in the Himalayas" />
+                <button className="pbtn" onClick={handleCompare} disabled={cmpLoading}>
+                  {cmpLoading?<><span className="spinner"/>Comparing…</>:"Compare ⚖️"}
                 </button>
               </div>
             </div>
-            {cmpError && <div className="error-box">{cmpError}</div>}
+            {cmpError&&<div className="err">{cmpError}</div>}
           </div>
-
-          {cmpResult && (
+          {cmpResult&&(
             <>
-              {cmpResult.comparison.summary && (
+              {cmpResult.comparison?.summary&&(
                 <div className="cmp-summary">
                   {cmpResult.comparison.summary}
-                  {cmpResult.comparison.winner && (
-                    <div className="cmp-winner-note">
-                      🏆 Best overall: <strong>{cmpResult.comparison.winner.product_id}</strong> — {cmpResult.comparison.winner.reason}
-                    </div>
+                  {cmpResult.comparison.winner&&(
+                    <div className="cmp-winner-note">🏆 Best overall: <strong>{cmpResult.comparison.winner.product_id}</strong> — {cmpResult.comparison.winner.reason}</div>
                   )}
                 </div>
               )}
-              <div className="cmp-grid">
-                {cmpResult.comparison.comparison_table?.map(e => (
-                  <CompareCard key={e.product_id} entry={e}
-                    isWinner={e.product_id === cmpResult.comparison.winner?.product_id} />
+              <div className="cmpgrid">
+                {cmpResult.comparison?.comparison_table?.map(e=>(
+                  <CmpCard key={e.product_id} e={e} isWinner={e.product_id===cmpResult.comparison.winner?.product_id}/>
                 ))}
               </div>
             </>
           )}
-
-          {!cmpResult && !cmpLoading && (
-            <div className="empty-state">
-              <div className="big">⚖️</div>
-              <p>Enter product names above to compare them.</p>
-            </div>
-          )}
+          {!cmpResult&&!cmpLoading&&<div className="empty"><div className="big">⚖️</div><p>Enter product names to compare.</p></div>}
         </div>
       )}
 
-      {/* METRICS PAGE */}
-      {page === "metrics" && (
+      {/* ── METRICS ── */}
+      {page==="metrics" && (
         <div className="page">
-          <h1 className="page-title">API Metrics</h1>
-          <p className="page-sub">Live operational stats from your ShopLens backend.</p>
-          <div className="search-box" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 14, color: "var(--muted)" }}>Click to pull fresh data from your Render API</span>
-            <button className="primary-btn" onClick={handleMetrics} disabled={metricsLoading}>
-              {metricsLoading ? <><span className="spinner" />Loading…</> : "Fetch metrics"}
+          <h1 className="pg-title">API Metrics</h1>
+          <p className="pg-sub">Live stats from your ShopLens backend on Render.</p>
+          <div className="sbox" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span style={{fontSize:14,color:"var(--mt)"}}>Pull live data from your Render API</span>
+            <button className="pbtn" onClick={handleMetrics} disabled={metricsLoading}>
+              {metricsLoading?<><span className="spinner"/>Loading…</>:"Fetch metrics"}
             </button>
           </div>
-          {metrics && (
-            <div className="metrics-grid">
+          {metrics&&(
+            <div className="mgrid">
               {[
-                { label: "Total requests", value: metrics.total_requests },
-                { label: "Recommend calls", value: metrics.recommend_requests },
-                { label: "Compare calls", value: metrics.compare_requests },
-                { label: "Errors", value: metrics.errors },
-                { label: "Cache hits", value: metrics.cache_hits },
-                { label: "Cache misses", value: metrics.cache_misses },
-                { label: "Cache hit rate", value: `${metrics.cache_hit_rate_pct}%` },
-                { label: "Avg latency", value: `${metrics.avg_latency_ms}ms` },
-                { label: "Rec latency", value: `${metrics.avg_recommend_latency_ms}ms` },
-                { label: "Cmp latency", value: `${metrics.avg_compare_latency_ms}ms` },
-                { label: "Cached extractions", value: metrics.constraint_cache_size },
-              ].map(m => (
-                <div key={m.label} className="metric-card">
-                  <div className="metric-label">{m.label}</div>
-                  <div className="metric-value">{m.value}</div>
+                {l:"Total requests",v:metrics.total_requests},
+                {l:"Recommend calls",v:metrics.recommend_requests},
+                {l:"Compare calls",v:metrics.compare_requests},
+                {l:"Errors",v:metrics.errors},
+                {l:"Cache hits",v:metrics.cache_hits},
+                {l:"Cache misses",v:metrics.cache_misses},
+                {l:"Cache hit rate",v:`${metrics.cache_hit_rate_pct}%`},
+                {l:"Avg latency",v:`${metrics.avg_latency_ms}ms`},
+                {l:"Rec latency",v:`${metrics.avg_recommend_latency_ms}ms`},
+                {l:"Cmp latency",v:`${metrics.avg_compare_latency_ms}ms`},
+                {l:"Cached extractions",v:metrics.constraint_cache_size},
+              ].map(m=>(
+                <div key={m.l} className="mcard">
+                  <div className="mlbl">{m.l}</div>
+                  <div className="mval">{m.v}</div>
                 </div>
               ))}
             </div>
@@ -627,12 +684,15 @@ export default function App() {
         </div>
       )}
 
+      {/* ── ADMIN ── */}
+      {page==="admin" && <AdminPage onProductsChanged={fetchProducts}/>}
+
       <footer>
-        <div className="footer-inner">
-          <p>ShopLens · RAG-powered shopping assistant built with FastAPI, LangChain, FAISS, BM25 & Mistral AI</p>
-          <div className="tech-badges">
-            {["FastAPI", "LangChain", "FAISS", "BM25 + RRF", "Mistral AI", "React + Vite", "Render", "Vercel"].map(t => (
-              <span key={t} className="tech-badge">{t}</span>
+        <div className="foot-in">
+          <p>ShopLens · RAG shopping assistant — FastAPI · LangChain · FAISS · BM25 · Mistral AI · Supabase</p>
+          <div className="tbadges">
+            {["FastAPI","LangChain","FAISS","BM25 + RRF","Mistral AI","Supabase","React + Vite","Render","Vercel"].map(t=>(
+              <span key={t} className="tbadge">{t}</span>
             ))}
           </div>
         </div>
