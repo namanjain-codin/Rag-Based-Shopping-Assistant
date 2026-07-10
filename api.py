@@ -1,15 +1,12 @@
 """
-FastAPI server with:
-  GET  /products                  - All products from DB (with stock)
-  GET  /products/low-stock        - Products with stock <= 5
-  POST /products                  - Create a new product (admin)
-  PATCH /products/{id}/stock      - Adjust stock (admin)
-  PUT  /products/{id}             - Update product fields (admin)
-  DELETE /products/{id}           - Delete product (admin)
-  POST /recommend                 - Hybrid RAG recommendations
-  POST /compare                   - Structured comparison
-  GET  /metrics                   - Operational metrics
-  GET  /health                    - Health check
+api.py  (v3 — pgvector + synchronized embeddings)
+---------------------------------------------------
+Key additions over v2:
+- POST /products     → creates product + generates embedding immediately
+- DELETE /products   → deletes product + embedding from pgvector
+- PATCH  /products/{id}/stock → if stock goes 0, excluded from search automatically
+- PUT    /products/{id}       → if description/features change, re-embeds
+- POST   /admin/reindex       → rebuild BM25 + re-embed any missing vectors
 """
 
 import os
@@ -18,58 +15,43 @@ import json
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Request, Header, Depends
+from fastapi import FastAPI, HTTPException, Request, Header, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from worker import load_services, get_recommendations, compare_products
+from worker import load_services, get_recommendations, compare_products, reload_bm25, build_doc_text
 from database import (
     init_db, seed_from_json,
     get_all_products, get_product_by_id, get_low_stock_products,
     create_product, update_product, update_stock, set_stock, delete_product,
-    LOW_STOCK_THRESHOLD,
+    upsert_embedding, LOW_STOCK_THRESHOLD,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "shoplens-admin-2024")
-# Set a strong secret in Render env vars. Frontend sends it as X-Admin-Key header.
 
 services: Dict[str, Any] = {}
-
 metrics = {
-    "total_requests":        0,
-    "recommend_requests":    0,
-    "compare_requests":      0,
-    "cache_hits":            0,
-    "cache_misses":          0,
-    "total_latency_ms":      0.0,
-    "recommend_latency_ms":  0.0,
-    "compare_latency_ms":    0.0,
-    "errors":                0,
+    "total_requests": 0, "recommend_requests": 0, "compare_requests": 0,
+    "cache_hits": 0, "cache_misses": 0, "total_latency_ms": 0.0,
+    "recommend_latency_ms": 0.0, "compare_latency_ms": 0.0, "errors": 0,
 }
 _constraint_cache: Dict[str, Any] = {}
 
 
-# ── Startup ───────────────────────────────────────────────────────────────────
+# ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting ShopLens API...")
+    print("🚀 Starting ShopLens API (pgvector mode)...")
     init_db()
     services.update(load_services())
-    print("✅ API is ready!")
+    print("✅ Ready.")
     yield
-    print("👋 Shutting down...")
     services.clear()
 
 
-app = FastAPI(
-    title="🛒 ShopLens — RAG Shopping Assistant",
-    description="Hybrid RAG recommendations + Supabase inventory management.",
-    version="5.0.0",
-    lifespan=lifespan,
-)
+app = FastAPI(title="🛒 ShopLens API v3", version="3.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -83,7 +65,7 @@ app.add_middleware(
 )
 
 
-# ── Auth dependency ───────────────────────────────────────────────────────────
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def require_admin(x_admin_key: Optional[str] = Header(default=None)):
     if x_admin_key != ADMIN_SECRET:
@@ -93,7 +75,7 @@ def require_admin(x_admin_key: Optional[str] = Header(default=None)):
 # ── Middleware ────────────────────────────────────────────────────────────────
 
 @app.middleware("http")
-async def track_latency_middleware(request: Request, call_next):
+async def track_latency(request: Request, call_next):
     start = time.perf_counter()
     try:
         response = await call_next(request)
@@ -108,51 +90,33 @@ async def track_latency_middleware(request: Request, call_next):
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
 class ProductOut(BaseModel):
-    id:          str
-    name:        str
-    brand:       str
-    category:    str
-    price:       float
-    currency:    str
-    rating:      float
-    features:    List[str]
-    tags:        List[str]
-    description: str
-    stock:       int
+    id: str; name: str; brand: str; category: str
+    price: float; currency: str; rating: float
+    features: List[str]; tags: List[str]; description: str; stock: int
 
 class ProductCreate(BaseModel):
-    id:          str  = Field(..., description="Unique product ID e.g. P041")
-    name:        str
-    brand:       str
-    category:    str
-    price:       float = Field(..., gt=0)
-    currency:    str   = "INR"
-    rating:      float = Field(..., ge=0, le=5)
-    features:    List[str] = []
-    tags:        List[str] = []
-    description: str   = ""
-    stock:       int   = Field(default=100, ge=0)
+    id: str; name: str; brand: str; category: str
+    price: float = Field(..., gt=0)
+    currency: str = "INR"
+    rating: float = Field(..., ge=0, le=5)
+    features: List[str] = []
+    tags: List[str] = []
+    description: str = ""
+    stock: int = Field(default=100, ge=0)
 
 class ProductUpdate(BaseModel):
-    name:        Optional[str]       = None
-    brand:       Optional[str]       = None
-    category:    Optional[str]       = None
-    price:       Optional[float]     = Field(default=None, gt=0)
-    currency:    Optional[str]       = None
-    rating:      Optional[float]     = Field(default=None, ge=0, le=5)
-    features:    Optional[List[str]] = None
-    tags:        Optional[List[str]] = None
-    description: Optional[str]       = None
+    name: Optional[str] = None; brand: Optional[str] = None
+    category: Optional[str] = None
+    price: Optional[float] = Field(default=None, gt=0)
+    currency: Optional[str] = None
+    rating: Optional[float] = Field(default=None, ge=0, le=5)
+    features: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+    description: Optional[str] = None
 
 class StockUpdate(BaseModel):
-    action:   str = Field(..., description="'set' | 'add' | 'subtract'")
+    action: str = Field(..., description="'set' | 'add' | 'subtract'")
     quantity: int = Field(..., ge=0)
-
-class LowStockItem(BaseModel):
-    id:       str
-    name:     str
-    category: str
-    stock:    int
 
 class RecommendRequest(BaseModel):
     query: str
@@ -160,29 +124,33 @@ class RecommendRequest(BaseModel):
 
 class CompareRequest(BaseModel):
     product_names: List[str] = Field(..., min_length=2)
-    use_case:      str
+    use_case: str
+
+
+# ── Embedding helper ──────────────────────────────────────────────────────────
+
+def embed_and_store(product: dict):
+    """Generate embedding for a product and store it in pgvector. Runs in background."""
+    try:
+        doc_text  = build_doc_text(product)
+        embedding = services["embeddings"].embed_query(doc_text)
+        upsert_embedding(product["id"], embedding, doc_text)
+        # Rebuild BM25 so new product is immediately searchable
+        reload_bm25(services)
+        print(f"✅ Embedded and indexed: {product['name']}")
+    except Exception as e:
+        print(f"⚠️  Failed to embed {product['id']}: {e}")
 
 
 # ── Product endpoints ─────────────────────────────────────────────────────────
 
 @app.get("/products", response_model=List[ProductOut])
 def list_products(category: Optional[str] = None):
-    """Returns all products from Supabase with current stock levels."""
-    rows = get_all_products(category)
-    # Normalize JSONB fields (psycopg2 may return them as list already)
-    result = []
-    for r in rows:
-        r["features"] = r["features"] if isinstance(r["features"], list) else json.loads(r["features"])
-        r["tags"]     = r["tags"]     if isinstance(r["tags"], list)     else json.loads(r["tags"])
-        r["price"]    = float(r["price"])
-        r["rating"]   = float(r["rating"])
-        result.append(r)
-    return result
+    return get_all_products(category)
 
 
-@app.get("/products/low-stock", response_model=List[LowStockItem])
+@app.get("/products/low-stock")
 def low_stock(threshold: int = LOW_STOCK_THRESHOLD):
-    """Returns products with stock at or below threshold (default 5)."""
     items = get_low_stock_products(threshold)
     return [{"id": r["id"], "name": r["name"], "category": r["category"], "stock": r["stock"]} for r in items]
 
@@ -192,99 +160,109 @@ def get_product(product_id: str):
     p = get_product_by_id(product_id)
     if not p:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
-    p["features"] = p["features"] if isinstance(p["features"], list) else json.loads(p["features"])
-    p["tags"]     = p["tags"]     if isinstance(p["tags"], list)     else json.loads(p["tags"])
-    p["price"]    = float(p["price"])
-    p["rating"]   = float(p["rating"])
     return p
 
 
 @app.post("/products", response_model=ProductOut, status_code=201, dependencies=[Depends(require_admin)])
-def add_product(body: ProductCreate):
-    """Admin only. Creates a new product in DB. Doesn't auto-rebuild RAG index."""
-    existing = get_product_by_id(body.id)
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Product ID '{body.id}' already exists.")
+def add_product(body: ProductCreate, background_tasks: BackgroundTasks):
+    """
+    Creates product in DB, then generates embedding in the background.
+    Product is immediately visible in the catalog.
+    It appears in AI search results within ~5 seconds (after embedding).
+    """
+    if get_product_by_id(body.id):
+        raise HTTPException(status_code=409, detail=f"Product '{body.id}' already exists.")
     created = create_product(body.model_dump())
-    created["features"] = created["features"] if isinstance(created["features"], list) else json.loads(created["features"])
-    created["tags"]     = created["tags"]     if isinstance(created["tags"], list)     else json.loads(created["tags"])
-    created["price"]    = float(created["price"])
-    created["rating"]   = float(created["rating"])
+    # Embed in background so HTTP response is instant
+    background_tasks.add_task(embed_and_store, created)
     return created
 
 
 @app.put("/products/{product_id}", response_model=ProductOut, dependencies=[Depends(require_admin)])
-def edit_product(product_id: str, body: ProductUpdate):
-    """Admin only. Partial update of product fields."""
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    updated = update_product(product_id, updates)
+def edit_product(product_id: str, body: ProductUpdate, background_tasks: BackgroundTasks):
+    """
+    Updates product. If name/description/features/tags changed,
+    re-generates the embedding in the background.
+    """
+    updates  = {k: v for k, v in body.model_dump().items() if v is not None}
+    updated  = update_product(product_id, updates)
     if not updated:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
-    updated["features"] = updated["features"] if isinstance(updated["features"], list) else json.loads(updated["features"])
-    updated["tags"]     = updated["tags"]     if isinstance(updated["tags"], list)     else json.loads(updated["tags"])
-    updated["price"]    = float(updated["price"])
-    updated["rating"]   = float(updated["rating"])
+    # Re-embed if text fields changed
+    text_fields = {"name", "brand", "category", "description", "features", "tags"}
+    if text_fields & set(updates.keys()):
+        background_tasks.add_task(embed_and_store, updated)
     return updated
 
 
 @app.patch("/products/{product_id}/stock", response_model=ProductOut, dependencies=[Depends(require_admin)])
-def adjust_stock(product_id: str, body: StockUpdate):
+def adjust_stock(product_id: str, body: StockUpdate, background_tasks: BackgroundTasks):
     """
-    Admin only. Adjust product stock.
-    action='set'      → sets stock to quantity
-    action='add'      → increases stock by quantity
-    action='subtract' → decreases stock by quantity (min 0)
+    Adjusts stock. If stock goes to 0, product is automatically excluded
+    from vector search (handled in SQL WHERE stock > 0).
+    BM25 is reloaded in background to reflect the change.
     """
-    if body.action == "set":
-        result = set_stock(product_id, body.quantity)
-    elif body.action == "add":
-        result = update_stock(product_id, +body.quantity)
-    elif body.action == "subtract":
-        result = update_stock(product_id, -body.quantity)
-    else:
-        raise HTTPException(status_code=400, detail="action must be 'set', 'add', or 'subtract'.")
+    if body.action   == "set":      result = set_stock(product_id, body.quantity)
+    elif body.action == "add":      result = update_stock(product_id, +body.quantity)
+    elif body.action == "subtract": result = update_stock(product_id, -body.quantity)
+    else: raise HTTPException(status_code=400, detail="action must be 'set', 'add', or 'subtract'.")
 
     if not result:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
-    result["features"] = result["features"] if isinstance(result["features"], list) else json.loads(result["features"])
-    result["tags"]     = result["tags"]     if isinstance(result["tags"], list)     else json.loads(result["tags"])
-    result["price"]    = float(result["price"])
-    result["rating"]   = float(result["rating"])
+
+    # Reload BM25 in background to exclude/include based on new stock
+    background_tasks.add_task(reload_bm25, services)
     return result
 
 
 @app.delete("/products/{product_id}", dependencies=[Depends(require_admin)])
-def remove_product(product_id: str):
-    """Admin only. Permanently deletes a product."""
+def remove_product(product_id: str, background_tasks: BackgroundTasks):
+    """
+    Deletes product from DB. Embedding is deleted with it (same row).
+    BM25 reloaded in background.
+    """
     deleted = delete_product(product_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
+    background_tasks.add_task(reload_bm25, services)
     return {"deleted": True, "id": product_id}
 
 
-# ── RAG endpoints (unchanged) ─────────────────────────────────────────────────
+# ── Admin: reindex ────────────────────────────────────────────────────────────
+
+@app.post("/admin/reindex", dependencies=[Depends(require_admin)])
+async def reindex(background_tasks: BackgroundTasks):
+    """
+    Rebuilds BM25 from DB and re-embeds any products missing embeddings.
+    Use after bulk changes.
+    """
+    def _reindex():
+        from ingest_db import ingest
+        ingest(force=False)         # embed missing only
+        reload_bm25(services)       # rebuild BM25
+        print("✅ Reindex complete.")
+    background_tasks.add_task(_reindex)
+    return {"status": "reindex started in background"}
+
+
+# ── RAG endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/recommend")
 def recommend(request: RecommendRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
-    t_start   = time.perf_counter()
-    cache_hit = False
+    t_start = time.perf_counter(); cache_hit = False
     try:
         cache_key = request.query.strip().lower()
         if cache_key in _constraint_cache:
             services["_cached_constraints"] = _constraint_cache[cache_key]
-            metrics["cache_hits"] += 1
-            cache_hit = True
+            metrics["cache_hits"] += 1; cache_hit = True
         else:
             services["_cached_constraints"] = None
             metrics["cache_misses"] += 1
-
         result = get_recommendations(query=request.query, services=services, top_n=request.top_n)
-
         if not cache_hit:
             _constraint_cache[cache_key] = result["extracted_constraints"]
-
         metrics["recommend_requests"]   += 1
         metrics["recommend_latency_ms"] += (time.perf_counter() - t_start) * 1000
         return {**result, "cache_hit": cache_hit}
@@ -295,15 +273,9 @@ def recommend(request: RecommendRequest):
 
 @app.post("/compare")
 def compare(request: CompareRequest):
-    if len(request.product_names) < 2:
-        raise HTTPException(status_code=400, detail="Provide at least 2 product names.")
     t_start = time.perf_counter()
     try:
-        result = compare_products(
-            product_names=request.product_names,
-            use_case=request.use_case,
-            services=services
-        )
+        result = compare_products(request.product_names, request.use_case, services)
         metrics["compare_requests"]   += 1
         metrics["compare_latency_ms"] += (time.perf_counter() - t_start) * 1000
         return result
@@ -315,44 +287,44 @@ def compare(request: CompareRequest):
         raise HTTPException(status_code=500, detail=f"Comparison failed: {str(e)}")
 
 
-# ── Utility endpoints ─────────────────────────────────────────────────────────
+# ── Utility ───────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-    ready = bool(services.get("vectorstore") and services.get("bm25_index") and services.get("llm"))
+    ready = bool(services.get("embeddings") and services.get("bm25_index") and services.get("llm"))
     low   = get_low_stock_products()
     return {
-        "status":          "healthy" if ready else "degraded",
+        "status": "healthy" if ready else "degraded",
+        "mode":   "pgvector",
         "low_stock_count": len(low),
         "services": {
-            "faiss": "loaded" if services.get("vectorstore") else "not loaded",
-            "bm25":  "loaded" if services.get("bm25_index")  else "not loaded",
-            "llm":   "loaded" if services.get("llm")         else "not loaded",
+            "pgvector":   "supabase",
+            "bm25":       f"{len(services.get('all_docs', []))} docs" if ready else "not loaded",
+            "embeddings": "mistral-embed" if ready else "not loaded",
+            "llm":        "mistral-large-latest" if ready else "not loaded",
         }
     }
 
 
 @app.get("/metrics")
 def get_metrics():
-    total       = metrics["total_requests"]
-    rec_count   = metrics["recommend_requests"]
-    cmp_count   = metrics["compare_requests"]
-    cache_total = metrics["cache_hits"] + metrics["cache_misses"]
+    total = metrics["total_requests"]; rc = metrics["recommend_requests"]; cc = metrics["compare_requests"]
+    ct    = metrics["cache_hits"] + metrics["cache_misses"]
     return {
         "total_requests":           total,
-        "recommend_requests":       rec_count,
-        "compare_requests":         cmp_count,
+        "recommend_requests":       rc,
+        "compare_requests":         cc,
         "errors":                   metrics["errors"],
         "cache_hits":               metrics["cache_hits"],
         "cache_misses":             metrics["cache_misses"],
-        "cache_hit_rate_pct":       round((metrics["cache_hits"] / cache_total * 100) if cache_total else 0, 2),
-        "avg_latency_ms":           round(metrics["total_latency_ms"]     / total     if total     else 0, 2),
-        "avg_recommend_latency_ms": round(metrics["recommend_latency_ms"] / rec_count if rec_count else 0, 2),
-        "avg_compare_latency_ms":   round(metrics["compare_latency_ms"]   / cmp_count if cmp_count else 0, 2),
+        "cache_hit_rate_pct":       round(metrics["cache_hits"]/ct*100 if ct else 0, 2),
+        "avg_latency_ms":           round(metrics["total_latency_ms"]/total if total else 0, 2),
+        "avg_recommend_latency_ms": round(metrics["recommend_latency_ms"]/rc if rc else 0, 2),
+        "avg_compare_latency_ms":   round(metrics["compare_latency_ms"]/cc if cc else 0, 2),
         "constraint_cache_size":    len(_constraint_cache),
     }
 
 
 @app.get("/")
 def root():
-    return {"message": "🛒 ShopLens API v5 with Supabase inventory is live!"}
+    return {"message": "🛒 ShopLens API v3 — pgvector + Supabase"}

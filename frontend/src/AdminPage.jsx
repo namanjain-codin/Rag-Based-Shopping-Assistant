@@ -237,6 +237,7 @@ export default function AdminPage() {
   const [authed, setAuthed]     = useState(!!sessionStorage.getItem("adminKey"));
   const [keyInput, setKeyInput] = useState("");
   const [authErr, setAuthErr]   = useState("");
+  const [adminTab, setAdminTab] = useState("inventory"); // inventory | metrics
 
   const [products, setProducts] = useState([]);
   const [loading, setLoading]   = useState(false);
@@ -246,6 +247,32 @@ export default function AdminPage() {
   const [editProd, setEditProd] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [lowStockOnly, setLowStockOnly] = useState(false);
+
+  const [metrics, setMetrics]         = useState(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [reindexing, setReindexing]   = useState(false);
+
+  const fetchMetrics = async () => {
+    setMetricsLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/metrics`);
+      setMetrics(await res.json());
+    } catch {}
+    setMetricsLoading(false);
+  };
+
+  const handleReindex = async () => {
+    setReindexing(true);
+    try {
+      const res = await fetch(`${API_BASE}/admin/reindex`, {
+        method: "POST",
+        headers: { "X-Admin-Key": sessionStorage.getItem("adminKey") || "" },
+      });
+      if (!res.ok) throw new Error((await res.json()).detail);
+      alert("Reindex started in background. Takes ~30s to complete.");
+    } catch (e) { alert(e.message); }
+    setReindexing(false);
+  };
 
   const login = () => {
     if (!keyInput.trim()) { setAuthErr("Enter the admin key."); return; }
@@ -318,73 +345,140 @@ export default function AdminPage() {
       {/* Header */}
       <div className="adm-topbar">
         <div>
-          <h1 className="adm-title">Inventory Management</h1>
+          <h1 className="adm-title">Admin Panel</h1>
           <p className="adm-sub">{products.length} products · {lowStockCount > 0 && <span className="adm-low-count">⚠ {lowStockCount} low stock</span>}</p>
         </div>
         <div style={{ display:"flex", gap:8 }}>
-          <button className="adm-btn gray" onClick={fetchProducts}>↺ Refresh</button>
-          <button className="adm-btn green" onClick={() => setShowAdd(true)}>+ Add product</button>
+          {adminTab === "inventory" && <>
+            <button className="adm-btn gray" onClick={fetchProducts}>↺ Refresh</button>
+            <button className="adm-btn gray" onClick={handleReindex} disabled={reindexing}>
+              {reindexing ? "Reindexing…" : "⚙ Reindex AI"}
+            </button>
+            <button className="adm-btn green" onClick={() => setShowAdd(true)}>+ Add product</button>
+          </>}
+          {adminTab === "metrics" &&
+            <button className="adm-btn green" onClick={fetchMetrics} disabled={metricsLoading}>
+              {metricsLoading ? "Loading…" : "↺ Fetch metrics"}
+            </button>
+          }
         </div>
       </div>
 
-      {/* Low-stock alert strip */}
-      {lowStockCount > 0 && (
-        <div className="adm-alert-strip">
-          <span>⚠ {lowStockCount} product{lowStockCount > 1 ? "s are" : " is"} running low on stock (≤{LOW_STOCK} units)</span>
-          <button className="adm-alert-btn" onClick={() => setLowStockOnly(l => !l)}>
-            {lowStockOnly ? "Show all" : "Show low stock only"}
-          </button>
-        </div>
-      )}
-
-      {/* Toolbar */}
-      <div className="adm-toolbar">
-        <input className="adm-search" placeholder="Search by name, brand, or ID…"
-          value={filter} onChange={e => setFilter(e.target.value)} />
-        <select className="adm-select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
-          <option>All</option>
-          {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-        </select>
-        <span className="adm-count">{filtered.length} shown</span>
+      {/* Admin tabs */}
+      <div className="adm-tabs">
+        <button className={`adm-tab${adminTab==="inventory"?" adm-tab-active":""}`} onClick={()=>setAdminTab("inventory")}>
+          📦 Inventory
+        </button>
+        <button className={`adm-tab${adminTab==="metrics"?" adm-tab-active":""}`} onClick={()=>{setAdminTab("metrics");fetchMetrics();}}>
+          📊 Metrics
+        </button>
       </div>
 
-      {/* Table */}
-      {loading ? (
-        <div className="adm-loading">Loading products…</div>
-      ) : (
-        <div className="adm-table-wrap">
-          <table className="adm-table">
-            <thead>
-              <tr>
-                <th>ID</th><th>Product</th><th>Category</th>
-                <th>Price</th><th>Rating</th><th>Stock</th>
-                <th>Adjust stock</th><th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(p => (
-                <tr key={p.id} className={p.stock <= LOW_STOCK ? "row-low" : ""}>
-                  <td className="adm-id">{p.id}</td>
-                  <td>
-                    <div className="adm-pname">{p.name}</div>
-                    <div className="adm-brand">{p.brand}</div>
-                  </td>
-                  <td><span className="adm-cat">{p.category}</span></td>
-                  <td>₹{parseFloat(p.price).toLocaleString()}</td>
-                  <td>⭐ {parseFloat(p.rating).toFixed(1)}</td>
-                  <td><StockBadge stock={p.stock} /></td>
-                  <td><StockControls product={p} onUpdate={handleStockUpdate} /></td>
-                  <td>
-                    <div style={{ display:"flex", gap:6 }}>
-                      <button className="adm-icon-btn edit" onClick={() => setEditProd(p)} title="Edit">✏️</button>
-                      <button className="adm-icon-btn del" onClick={() => handleDelete(p.id)}
-                        disabled={deleting === p.id} title="Delete">🗑️</button>
-                    </div>
-                  </td>
+      {/* ── INVENTORY TAB ── */}
+      {adminTab === "inventory" && <>
+        {/* Low-stock alert strip */}
+        {lowStockCount > 0 && (
+          <div className="adm-alert-strip">
+            <span>⚠ {lowStockCount} product{lowStockCount > 1 ? "s are" : " is"} running low on stock (≤{LOW_STOCK} units)</span>
+            <button className="adm-alert-btn" onClick={() => setLowStockOnly(l => !l)}>
+              {lowStockOnly ? "Show all" : "Show low stock only"}
+            </button>
+          </div>
+        )}
+
+        {/* Toolbar */}
+        <div className="adm-toolbar">
+          <input className="adm-search" placeholder="Search by name, brand, or ID…"
+            value={filter} onChange={e => setFilter(e.target.value)} />
+          <select className="adm-select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
+            <option>All</option>
+            {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+          </select>
+          <span className="adm-count">{filtered.length} shown</span>
+        </div>
+
+        {/* Table */}
+        {loading ? (
+          <div className="adm-loading">Loading products…</div>
+        ) : (
+          <div className="adm-table-wrap">
+            <table className="adm-table">
+              <thead>
+                <tr>
+                  <th>ID</th><th>Product</th><th>Category</th>
+                  <th>Price</th><th>Rating</th><th>Stock</th>
+                  <th>Adjust stock</th><th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filtered.map(p => (
+                  <tr key={p.id} className={p.stock <= LOW_STOCK ? "row-low" : ""}>
+                    <td className="adm-id">{p.id}</td>
+                    <td>
+                      <div className="adm-pname">{p.name}</div>
+                      <div className="adm-brand">{p.brand}</div>
+                    </td>
+                    <td><span className="adm-cat">{p.category}</span></td>
+                    <td>₹{parseFloat(p.price).toLocaleString()}</td>
+                    <td>⭐ {parseFloat(p.rating).toFixed(1)}</td>
+                    <td><StockBadge stock={p.stock} /></td>
+                    <td><StockControls product={p} onUpdate={handleStockUpdate} /></td>
+                    <td>
+                      <div style={{ display:"flex", gap:6 }}>
+                        <button className="adm-icon-btn edit" onClick={() => setEditProd(p)} title="Edit">✏️</button>
+                        <button className="adm-icon-btn del" onClick={() => handleDelete(p.id)}
+                          disabled={deleting === p.id} title="Delete">🗑️</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </>}
+
+      {/* ── METRICS TAB ── */}
+      {adminTab === "metrics" && (
+        <div>
+          {!metrics && !metricsLoading && (
+            <div style={{textAlign:"center",padding:"3rem",color:"var(--mt)"}}>
+              <div style={{fontSize:40,marginBottom:12}}>📊</div>
+              <p>Click "Fetch metrics" to load live stats from your API.</p>
+            </div>
+          )}
+          {metricsLoading && <div className="adm-loading">Fetching metrics…</div>}
+          {metrics && (
+            <>
+              {/* Cache explanation banner */}
+              <div className="adm-info-strip">
+                <strong>What is caching?</strong> Constraint extraction (parsing price/category/features from a query) calls Mistral LLM and takes ~1s.
+                Results are cached in memory keyed by query string — identical queries skip the LLM call entirely and reuse the extracted constraints.
+                Cache is in-memory only and resets on server restart.
+              </div>
+              <div className="adm-mgrid">
+                {[
+                  {l:"Total requests",    v:metrics.total_requests,           note:"All HTTP requests to the API"},
+                  {l:"Recommend calls",   v:metrics.recommend_requests,       note:"/recommend endpoint hits"},
+                  {l:"Compare calls",     v:metrics.compare_requests,         note:"/compare endpoint hits"},
+                  {l:"Errors",            v:metrics.errors,                   note:"Failed requests (5xx)"},
+                  {l:"Cache hits",        v:metrics.cache_hits,               note:"Queries served from constraint cache"},
+                  {l:"Cache misses",      v:metrics.cache_misses,             note:"Queries that called Mistral for extraction"},
+                  {l:"Cache hit rate",    v:`${metrics.cache_hit_rate_pct}%`, note:"Higher = fewer LLM calls"},
+                  {l:"Avg latency",       v:`${metrics.avg_latency_ms}ms`,    note:"Average across all endpoints"},
+                  {l:"Rec latency",       v:`${metrics.avg_recommend_latency_ms}ms`, note:"Average /recommend response time"},
+                  {l:"Cmp latency",       v:`${metrics.avg_compare_latency_ms}ms`,  note:"Average /compare response time"},
+                  {l:"Cached queries",    v:metrics.constraint_cache_size,    note:"Unique queries stored in memory"},
+                ].map(m=>(
+                  <div key={m.l} className="adm-mcard">
+                    <div className="adm-mlbl">{m.l}</div>
+                    <div className="adm-mval">{m.v}</div>
+                    <div className="adm-mnote">{m.note}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 

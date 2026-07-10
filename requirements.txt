@@ -4,7 +4,6 @@ langchain
 langchain-mistralai
 langchain-community
 langchain-core
-faiss-cpu
 rank-bm25
 python-dotenv
 pydantic

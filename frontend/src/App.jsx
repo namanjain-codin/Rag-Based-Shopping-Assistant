@@ -242,7 +242,6 @@ export default function App() {
     {id:"home",label:"🛍️ Shop"},
     {id:"search",label:"✦ AI Search"},
     {id:"compare",label:"⚖️ Compare"},
-    {id:"metrics",label:"📊 Metrics"},
     {id:"admin",label:"🔐 Admin"},
   ];
 
@@ -451,7 +450,16 @@ export default function App() {
       .adm-btn.green:hover{opacity:.88}
       .adm-icon-btn{background:transparent;border:.5px solid var(--bd2);border-radius:var(--rs);padding:5px 9px;cursor:pointer;font-size:14px;transition:background .15s}
       .adm-icon-btn:hover{background:var(--sur2)}
-      .adm-loading{padding:2rem;text-align:center;color:var(--mt)}
+      .adm-tabs{display:flex;gap:4px;background:var(--sur2);border-radius:10px;padding:4px;margin-bottom:1.25rem;width:fit-content}
+      .adm-tab{padding:8px 20px;border:none;background:transparent;cursor:pointer;border-radius:7px;font-size:14px;color:var(--mt);font-family:inherit;font-weight:500;transition:all .15s}
+      .adm-tab:hover{color:var(--tx)}
+      .adm-tab-active{background:var(--sur);color:var(--tx);box-shadow:0 1px 3px rgba(0,0,0,.2)}
+      .adm-info-strip{background:#6366f112;border:.5px solid #6366f130;border-radius:var(--rs);padding:12px 16px;font-size:13px;color:#a5b4fc;line-height:1.7;margin-bottom:1.25rem}
+      .adm-mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+      .adm-mcard{background:var(--sur);border:.5px solid var(--bd);border-radius:var(--r);padding:1rem 1.1rem}
+      .adm-mlbl{font-size:11px;color:var(--mt);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+      .adm-mval{font-size:26px;font-weight:700;margin-bottom:4px}
+      .adm-mnote{font-size:11px;color:var(--mt2);line-height:1.4}
       .adm-error{background:#ef444412;color:#f87171;font-size:13px;padding:10px 14px;border-radius:var(--rs);margin-top:10px}
       .adm-login{display:flex;align-items:center;justify-content:center;min-height:60vh;padding:2rem}
       .adm-login-card{background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--r);padding:2.5rem;width:100%;max-width:380px;text-align:center}
@@ -648,50 +656,14 @@ export default function App() {
         </div>
       )}
 
-      {/* ── METRICS ── */}
-      {page==="metrics" && (
-        <div className="page">
-          <h1 className="pg-title">API Metrics</h1>
-          <p className="pg-sub">Live stats from your ShopLens backend on Render.</p>
-          <div className="sbox" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span style={{fontSize:14,color:"var(--mt)"}}>Pull live data from your Render API</span>
-            <button className="pbtn" onClick={handleMetrics} disabled={metricsLoading}>
-              {metricsLoading?<><span className="spinner"/>Loading…</>:"Fetch metrics"}
-            </button>
-          </div>
-          {metrics&&(
-            <div className="mgrid">
-              {[
-                {l:"Total requests",v:metrics.total_requests},
-                {l:"Recommend calls",v:metrics.recommend_requests},
-                {l:"Compare calls",v:metrics.compare_requests},
-                {l:"Errors",v:metrics.errors},
-                {l:"Cache hits",v:metrics.cache_hits},
-                {l:"Cache misses",v:metrics.cache_misses},
-                {l:"Cache hit rate",v:`${metrics.cache_hit_rate_pct}%`},
-                {l:"Avg latency",v:`${metrics.avg_latency_ms}ms`},
-                {l:"Rec latency",v:`${metrics.avg_recommend_latency_ms}ms`},
-                {l:"Cmp latency",v:`${metrics.avg_compare_latency_ms}ms`},
-                {l:"Cached extractions",v:metrics.constraint_cache_size},
-              ].map(m=>(
-                <div key={m.l} className="mcard">
-                  <div className="mlbl">{m.l}</div>
-                  <div className="mval">{m.v}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── ADMIN ── */}
+      {/* ── ADMIN (includes metrics) ── */}
       {page==="admin" && <AdminPage onProductsChanged={fetchProducts}/>}
 
       <footer>
         <div className="foot-in">
-          <p>ShopLens · RAG shopping assistant — FastAPI · LangChain · FAISS · BM25 · Mistral AI · Supabase</p>
+          <p>ShopLens · RAG shopping assistant — FastAPI · LangChain · pgvector · BM25 · Mistral AI · Supabase</p>
           <div className="tbadges">
-            {["FastAPI","LangChain","FAISS","BM25 + RRF","Mistral AI","Supabase","React + Vite","Render","Vercel"].map(t=>(
+            {["FastAPI","LangChain","pgvector","BM25 + RRF","Mistral AI","Supabase","React + Vite","Render","Vercel"].map(t=>(
               <span key={t} className="tbadge">{t}</span>
             ))}
           </div>

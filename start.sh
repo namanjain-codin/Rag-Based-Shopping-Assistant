@@ -1,12 +1,10 @@
 #!/bin/bash
-# Seed DB from products.json (first deploy only — ON CONFLICT DO NOTHING)
+set -e
+echo "🌱 Seeding DB from products.json (skips existing)..."
 python ingest_db.py --seed
 
-# Build FAISS/BM25 index from DB if not present
-if [ ! -d "faiss_index" ]; then
-  echo "📦 Building RAG index from database..."
-  python ingest_db.py
-fi
+echo "⚙️  Embedding products missing vectors..."
+python ingest_db.py
 
 echo "🚀 Starting ShopLens API..."
 uvicorn api:app --host 0.0.0.0 --port $PORT
