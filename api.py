@@ -328,3 +328,102 @@ def get_metrics():
 @app.get("/")
 def root():
     return {"message": "🛒 ShopLens API v3 — pgvector + Supabase"}
+
+# ── Checkout endpoints ────────────────────────────────────────────────────────
+from checkout import send_otp, verify_otp, send_confirmation
+
+class CheckoutItem(BaseModel):
+    id:    str
+    name:  str
+    qty:   int
+    price: float
+
+class SendOtpRequest(BaseModel):
+    name:    str = Field(..., min_length=2)
+    email:   str = Field(..., pattern=r"^[^@]+@[^@]+\.[^@]+$")
+    mobile:  str = Field(..., min_length=10, max_length=15)
+    address: str = Field(..., min_length=10)
+    items:   List[CheckoutItem]
+    total:   float
+
+class VerifyOtpRequest(BaseModel):
+    email: str
+    otp:   str = Field(..., min_length=6, max_length=6)
+
+
+@app.post("/checkout/send-otp")
+def checkout_send_otp(body: SendOtpRequest):
+    """
+    Step 1 of checkout:
+    Validates input, sends OTP to email, stores order data temporarily.
+    """
+    if not body.items:
+        raise HTTPException(status_code=400, detail="Cart is empty.")
+    try:
+        send_otp(
+            email=body.email,
+            name=body.name,
+            order_data={
+                "name":    body.name,
+                "email":   body.email,
+                "mobile":  body.mobile,
+                "address": body.address,
+                "items":   [i.model_dump() for i in body.items],
+                "total":   body.total,
+            }
+        )
+        return {"status": "otp_sent", "email": body.email}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to send OTP: {str(e)}")
+
+
+@app.post("/checkout/verify-otp")
+def checkout_verify_otp(body: VerifyOtpRequest, background_tasks: BackgroundTasks):
+    """
+    Step 2 of checkout:
+    Verifies OTP → deducts stock → sends confirmation email.
+    """
+    try:
+        record = verify_otp(email=body.email, otp=body.otp)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    order = record["order_data"]
+    name  = record["name"]
+
+    # Deduct stock for each item
+    stock_errors = []
+    for item in order["items"]:
+        result = update_stock(item["id"], -item["qty"])
+        if not result:
+            stock_errors.append(item["name"])
+        else:
+            # Reload BM25 in background to reflect stock change
+            background_tasks.add_task(reload_bm25, services)
+
+    # Send confirmation email in background (don't block response)
+    background_tasks.add_task(
+        send_confirmation,
+        email=order["email"],
+        name=name,
+        mobile=order["mobile"],
+        address=order["address"],
+        items=order["items"],
+        total=order["total"],
+    )
+
+    return {
+        "status":        "order_placed",
+        "message":       f"Order confirmed! Confirmation sent to {order['email']}",
+        "stock_errors":  stock_errors,
+        "order_summary": {
+            "name":    name,
+            "email":   order["email"],
+            "mobile":  order["mobile"],
+            "address": order["address"],
+            "items":   order["items"],
+            "total":   order["total"],
+        }
+    }

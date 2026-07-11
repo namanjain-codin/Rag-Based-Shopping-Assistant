@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import AdminPage from "./AdminPage.jsx";
+import CheckoutModal from "./CheckoutModal.jsx";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const LOW_STOCK_THRESHOLD = 5;
@@ -29,14 +30,16 @@ function StockPill({ stock }) {
 }
 
 // ── Product Card ──────────────────────────────────────────────────────────────
-function ProductCard({ p, onAskAI }) {
+function ProductCard({ p, onAskAI, onAddToCart, inCart }) {
   const isLow = p.stock !== undefined && p.stock <= LOW_STOCK_THRESHOLD;
+  const isOut = p.stock === 0;
   return (
     <div className={`pcard${isLow ? " pcard-low" : ""}`}>
       <div className="pcard-img" style={{ background:`linear-gradient(135deg,${cc(p.category)}22,${cc(p.category)}44)` }}>
         <span className="pcard-emoji">{CAT_ICON[p.category]}</span>
         <span className="pcard-cat" style={{ background:cc(p.category) }}>{p.category}</span>
-        {isLow && <span className="pcard-low-flag">⚠ Low stock</span>}
+        {isLow && !isOut && <span className="pcard-low-flag">⚠ Low stock</span>}
+        {isOut && <span className="pcard-out-flag">Out of stock</span>}
       </div>
       <div className="pcard-body">
         <p className="pcard-brand">{p.brand}</p>
@@ -49,6 +52,13 @@ function ProductCard({ p, onAskAI }) {
           <span className="pcard-price">₹{Number(p.price).toLocaleString()}</span>
           <button className="btn-ai" onClick={()=>onAskAI(p.name)}>Ask AI ✦</button>
         </div>
+        <button
+          className={`btn-cart${inCart ? " btn-cart-in" : ""}${isOut ? " btn-cart-out" : ""}`}
+          onClick={() => !isOut && onAddToCart(p)}
+          disabled={isOut}
+        >
+          {isOut ? "Out of stock" : inCart ? "✓ In cart" : "+ Add to cart"}
+        </button>
       </div>
     </div>
   );
@@ -128,10 +138,131 @@ function LowStockBanner({ items }) {
   );
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
+// ── Cart Drawer ───────────────────────────────────────────────────────────────
+function CartDrawer({ cart, onClose, onQtyChange, onRemove, onBuyNow, buying }) {
+  const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
+  const totalItems = cart.reduce((s, i) => s + i.qty, 0);
+  return (
+    <>
+      <div className="cart-overlay" onClick={onClose} />
+      <div className="cart-drawer">
+        <div className="cart-header">
+          <h2 className="cart-title">🛒 Your Cart <span className="cart-count">{totalItems}</span></h2>
+          <button className="cart-close" onClick={onClose}>✕</button>
+        </div>
+
+        {cart.length === 0 ? (
+          <div className="cart-empty">
+            <div style={{fontSize:48,marginBottom:12}}>🛍️</div>
+            <p>Your cart is empty</p>
+            <p style={{fontSize:13,marginTop:6}}>Add products from the shop</p>
+          </div>
+        ) : (
+          <>
+            <div className="cart-items">
+              {cart.map(item => (
+                <div key={item.id} className="cart-item">
+                  <div className="cart-item-icon" style={{background:`linear-gradient(135deg,${item.color}22,${item.color}44)`}}>
+                    <span style={{fontSize:28}}>{item.emoji}</span>
+                  </div>
+                  <div className="cart-item-info">
+                    <p className="cart-item-name">{item.name}</p>
+                    <p className="cart-item-brand">{item.brand}</p>
+                    <p className="cart-item-price">₹{Number(item.price).toLocaleString()} each</p>
+                    {item.stock <= 5 && item.stock > 0 &&
+                      <p className="cart-item-warn">⚠ Only {item.stock} in stock</p>
+                    }
+                  </div>
+                  <div className="cart-item-right">
+                    <div className="cart-qty">
+                      <button className="qty-btn" onClick={() => onQtyChange(item.id, item.qty - 1)}>−</button>
+                      <span className="qty-val">{item.qty}</span>
+                      <button className="qty-btn"
+                        onClick={() => onQtyChange(item.id, item.qty + 1)}
+                        disabled={item.qty >= item.stock}>+</button>
+                    </div>
+                    <p className="cart-item-subtotal">₹{Number(item.price * item.qty).toLocaleString()}</p>
+                    <button className="cart-remove" onClick={() => onRemove(item.id)}>Remove</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="cart-footer">
+              <div className="cart-summary">
+                <div className="cart-summary-row">
+                  <span>Subtotal ({totalItems} item{totalItems > 1 ? "s" : ""})</span>
+                  <span>₹{total.toLocaleString()}</span>
+                </div>
+                <div className="cart-summary-row" style={{color:"var(--mt)",fontSize:13}}>
+                  <span>Shipping</span><span>Free</span>
+                </div>
+                <div className="cart-summary-row cart-total">
+                  <span>Total</span>
+                  <span>₹{total.toLocaleString()}</span>
+                </div>
+              </div>
+              <button className="cart-buy-btn" onClick={onBuyNow} disabled={buying}>
+                {buying ? <><span className="spinner"/>Processing…</> : `Buy Now — ₹${total.toLocaleString()}`}
+              </button>
+              <p className="cart-disclaimer">Stock will be deducted on purchase</p>
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ── Order success toast ───────────────────────────────────────────────────────
+function Toast({ msg, onClose }) {
+  useEffect(() => { const t = setTimeout(onClose, 4000); return () => clearTimeout(t); }, [onClose]);
+  return <div className="toast">{msg}</div>;
+}
+
+
 export default function App() {
   const [page, setPage]           = useState("home");
   const [mobileNav, setMobileNav] = useState(false);
+
+  // Cart
+  const [cart, setCart]               = useState([]);
+  const [cartOpen, setCartOpen]       = useState(false);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [toast, setToast]             = useState("");
+  const cartCount = cart.reduce((s, i) => s + i.qty, 0);
+
+  const addToCart = (p) => {
+    if (p.stock === 0) return;
+    setCart(prev => {
+      const exists = prev.find(i => i.id === p.id);
+      if (exists) {
+        if (exists.qty >= p.stock) return prev;
+        return prev.map(i => i.id === p.id ? { ...i, qty: i.qty + 1 } : i);
+      }
+      return [...prev, {
+        id: p.id, name: p.name, brand: p.brand, price: p.price,
+        stock: p.stock, qty: 1,
+        emoji: CAT_ICON[p.category] || "📦",
+        color: cc(p.category),
+      }];
+    });
+    setToast(`${p.name} added to cart`);
+  };
+
+  const changeQty = (id, qty) => {
+    if (qty <= 0) { removeFromCart(id); return; }
+    setCart(prev => prev.map(i => i.id === id ? { ...i, qty } : i));
+  };
+
+  const removeFromCart = (id) => setCart(prev => prev.filter(i => i.id !== id));
+
+  const handleOrderSuccess = () => {
+    setCart([]);
+    setCartOpen(false);
+    setToast("✅ Order placed! Confirmation email sent.");
+    fetchProducts();
+  };
 
   // Products from DB
   const [products, setProducts]   = useState([]);
@@ -485,6 +616,7 @@ export default function App() {
       .form-field textarea{resize:vertical}
 
       /* MISC */
+      .adm-loading{padding:2rem;text-align:center;color:var(--mt)}
       .empty{text-align:center;padding:4rem 1rem;color:var(--mt)}
       .empty .big{font-size:48px;margin-bottom:12px}
       .spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:6px}
@@ -493,6 +625,52 @@ export default function App() {
       .foot-in{max-width:1200px;margin:0 auto}
       .tbadges{display:flex;justify-content:center;gap:7px;flex-wrap:wrap;margin-top:10px}
       .tbadge{font-size:11px;padding:3px 10px;border-radius:12px;border:.5px solid var(--bd2);color:var(--mt)}
+      /* CART */
+      .cart-icon-btn{position:relative;background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);padding:8px 14px;color:var(--tx);cursor:pointer;font-size:18px;font-family:inherit;transition:background .15s;display:flex;align-items:center;gap:6px;flex-shrink:0}
+      .cart-icon-btn:hover{background:var(--sur)}
+      .cart-badge{background:var(--ac);color:#fff;font-size:11px;font-weight:700;border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;position:absolute;top:-6px;right:-6px}
+      .cart-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;backdrop-filter:blur(2px)}
+      .cart-drawer{position:fixed;top:0;right:0;height:100vh;width:100%;max-width:420px;background:var(--sur);border-left:.5px solid var(--bd2);z-index:201;display:flex;flex-direction:column;animation:slideIn .25s ease}
+      @keyframes slideIn{from{transform:translateX(100%)}to{transform:none}}
+      .cart-header{display:flex;justify-content:space-between;align-items:center;padding:1.25rem 1.5rem;border-bottom:.5px solid var(--bd)}
+      .cart-title{font-size:18px;font-weight:700;display:flex;align-items:center;gap:8px}
+      .cart-count{background:var(--ac);color:#fff;font-size:12px;font-weight:700;border-radius:12px;padding:2px 8px}
+      .cart-close{background:transparent;border:none;color:var(--mt);font-size:20px;cursor:pointer;padding:4px}
+      .cart-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--mt);padding:2rem}
+      .cart-items{flex:1;overflow-y:auto;padding:1rem 1.5rem;display:flex;flex-direction:column;gap:12px}
+      .cart-item{display:flex;gap:12px;align-items:flex-start;background:var(--sur2);border-radius:var(--r);padding:12px;border:.5px solid var(--bd)}
+      .cart-item-icon{width:56px;height:56px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+      .cart-item-info{flex:1;min-width:0}
+      .cart-item-name{font-size:14px;font-weight:600;line-height:1.3;margin-bottom:2px}
+      .cart-item-brand{font-size:12px;color:var(--mt);margin-bottom:2px}
+      .cart-item-price{font-size:12px;color:var(--mt)}
+      .cart-item-warn{font-size:11px;color:#fbbf24;margin-top:3px}
+      .cart-item-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0}
+      .cart-qty{display:flex;align-items:center;gap:6px;background:var(--sur);border:.5px solid var(--bd2);border-radius:var(--rs);padding:3px 6px}
+      .qty-btn{background:transparent;border:none;color:var(--tx);cursor:pointer;font-size:16px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:4px;transition:background .15s}
+      .qty-btn:hover:not(:disabled){background:var(--sur2)}
+      .qty-btn:disabled{opacity:.35;cursor:not-allowed}
+      .qty-val{font-size:14px;font-weight:600;min-width:20px;text-align:center}
+      .cart-item-subtotal{font-size:14px;font-weight:700;color:var(--ac2)}
+      .cart-remove{background:transparent;border:none;color:var(--mt);font-size:12px;cursor:pointer;text-decoration:underline;padding:0}
+      .cart-remove:hover{color:var(--re)}
+      .cart-footer{padding:1.25rem 1.5rem;border-top:.5px solid var(--bd);background:var(--sur)}
+      .cart-summary{margin-bottom:1rem}
+      .cart-summary-row{display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px}
+      .cart-total{font-size:17px;font-weight:700;border-top:.5px solid var(--bd);padding-top:10px;margin-top:6px}
+      .cart-buy-btn{width:100%;padding:14px;background:var(--ac);color:#fff;border:none;border-radius:var(--r);font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s}
+      .cart-buy-btn:hover{opacity:.88}
+      .cart-buy-btn:disabled{opacity:.5;cursor:not-allowed}
+      .cart-disclaimer{font-size:12px;color:var(--mt);text-align:center;margin-top:8px}
+      /* Add to cart btn */
+      .btn-cart{width:100%;margin-top:8px;padding:9px;background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);color:var(--tx);font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+      .btn-cart:hover:not(:disabled){background:var(--ac);border-color:var(--ac);color:#fff}
+      .btn-cart-in{background:#22c55e18;border-color:#22c55e40;color:#4ade80}
+      .btn-cart-out{opacity:.4;cursor:not-allowed}
+      .pcard-out-flag{position:absolute;top:10px;left:10px;font-size:10px;background:#ef4444;color:#fff;padding:2px 7px;border-radius:20px;font-weight:700}
+      /* Toast */
+      .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--sur);border:.5px solid var(--bd2);color:var(--tx);padding:12px 24px;border-radius:50px;font-size:14px;font-weight:500;z-index:300;box-shadow:0 8px 32px rgba(0,0,0,.4);animation:toastIn .25s ease;white-space:nowrap}
+      @keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
     `}</style>
 
       {/* NAV */}
@@ -510,6 +688,10 @@ export default function App() {
               </button>
             ))}
           </div>
+          <button className="cart-icon-btn" onClick={()=>setCartOpen(true)}>
+            🛒
+            {cartCount > 0 && <span className="cart-badge">{cartCount}</span>}
+          </button>
           <button className="hamburger" onClick={()=>setMobileNav(!mobileNav)} aria-label="Menu">
             <span/><span/><span/>
           </button>
@@ -534,7 +716,7 @@ export default function App() {
             <div className="hero-stats">
               <div className="hstat"><span>{products.length||40}</span><span>Products</span></div>
               <div className="hstat"><span>10</span><span>Categories</span></div>
-              <div className="hstat"><span>BM25 + FAISS</span><span>Hybrid retrieval</span></div>
+              <div className="hstat"><span>BM25 + pgvector</span><span>Hybrid retrieval</span></div>
               <div className="hstat"><span>RRF</span><span>Rank fusion</span></div>
             </div>
           </div>
@@ -568,7 +750,12 @@ export default function App() {
               <div className="empty"><div className="big">🔍</div><p>No products match your filter.</p></div>
             ) : (
               <div className="pgrid">
-                {filtered.map(p=><ProductCard key={p.id} p={p} onAskAI={askAI}/>)}
+                {filtered.map(p=>(
+                  <ProductCard key={p.id} p={p} onAskAI={askAI}
+                    onAddToCart={addToCart}
+                    inCart={cart.some(i=>i.id===p.id)}
+                  />
+                ))}
               </div>
             )}
           </div>
@@ -656,7 +843,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ── ADMIN (includes metrics) ── */}
+      {/* ── ADMIN ── */}
       {page==="admin" && <AdminPage onProductsChanged={fetchProducts}/>}
 
       <footer>
@@ -669,6 +856,31 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* CART DRAWER */}
+      {cartOpen && (
+        <CartDrawer
+          cart={cart}
+          onClose={()=>setCartOpen(false)}
+          onQtyChange={changeQty}
+          onRemove={removeFromCart}
+          onBuyNow={()=>{ setCartOpen(false); setCheckoutOpen(true); }}
+          buying={false}
+        />
+      )}
+
+      {/* CHECKOUT MODAL */}
+      {checkoutOpen && (
+        <CheckoutModal
+          cart={cart}
+          total={cart.reduce((s,i)=>s+i.price*i.qty,0)}
+          onClose={()=>setCheckoutOpen(false)}
+          onSuccess={handleOrderSuccess}
+        />
+      )}
+
+      {/* TOAST */}
+      {toast && <Toast msg={toast} onClose={()=>setToast("")}/>}
     </>
   );
 }
