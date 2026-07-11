@@ -34,7 +34,10 @@ def _get_gmail_conn():
     app_pass = os.getenv("GMAIL_APP_PASS")
     if not user or not app_pass:
         raise ValueError("GMAIL_USER and GMAIL_APP_PASS must be set.")
-    server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+    server = smtplib.SMTP("smtp.gmail.com", 587)
+    server.ehlo()
+    server.starttls()
+    server.ehlo()
     server.login(user, app_pass)
     return server, user
 
