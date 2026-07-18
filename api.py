@@ -26,6 +26,7 @@ from database import (
     create_product, update_product, update_stock, set_stock, delete_product,
     upsert_embedding, LOW_STOCK_THRESHOLD,
 )
+import cache as redis_cache
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "shoplens-admin-2024")
@@ -135,8 +136,8 @@ def embed_and_store(product: dict):
         doc_text  = build_doc_text(product)
         embedding = services["embeddings"].embed_query(doc_text)
         upsert_embedding(product["id"], embedding, doc_text)
-        # Rebuild BM25 so new product is immediately searchable
         reload_bm25(services)
+        redis_cache.invalidate_products()   # flush product cache
         print(f"✅ Embedded and indexed: {product['name']}")
     except Exception as e:
         print(f"⚠️  Failed to embed {product['id']}: {e}")
@@ -146,13 +147,27 @@ def embed_and_store(product: dict):
 
 @app.get("/products", response_model=List[ProductOut])
 def list_products(category: Optional[str] = None):
-    return get_all_products(category)
+    # Try Redis first
+    cached = redis_cache.get_products(category)
+    if cached:
+        print(f"💾 Redis HIT — products:{category or 'all'}")
+        return cached
+    # DB fallback
+    products = get_all_products(category)
+    redis_cache.set_products(products, category)
+    return products
 
 
 @app.get("/products/low-stock")
 def low_stock(threshold: int = LOW_STOCK_THRESHOLD):
-    items = get_low_stock_products(threshold)
-    return [{"id": r["id"], "name": r["name"], "category": r["category"], "stock": r["stock"]} for r in items]
+    cached = redis_cache.get_low_stock()
+    if cached is not None:
+        print("💾 Redis HIT — low_stock")
+        return cached
+    items  = get_low_stock_products(threshold)
+    result = [{"id": r["id"], "name": r["name"], "category": r["category"], "stock": r["stock"]} for r in items]
+    redis_cache.set_low_stock(result)
+    return result
 
 
 @app.get("/products/{product_id}", response_model=ProductOut)
@@ -197,11 +212,6 @@ def edit_product(product_id: str, body: ProductUpdate, background_tasks: Backgro
 
 @app.patch("/products/{product_id}/stock", response_model=ProductOut, dependencies=[Depends(require_admin)])
 def adjust_stock(product_id: str, body: StockUpdate, background_tasks: BackgroundTasks):
-    """
-    Adjusts stock. If stock goes to 0, product is automatically excluded
-    from vector search (handled in SQL WHERE stock > 0).
-    BM25 is reloaded in background to reflect the change.
-    """
     if body.action   == "set":      result = set_stock(product_id, body.quantity)
     elif body.action == "add":      result = update_stock(product_id, +body.quantity)
     elif body.action == "subtract": result = update_stock(product_id, -body.quantity)
@@ -210,20 +220,18 @@ def adjust_stock(product_id: str, body: StockUpdate, background_tasks: Backgroun
     if not result:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
 
-    # Reload BM25 in background to exclude/include based on new stock
+    # Invalidate Redis product + low-stock cache
+    redis_cache.invalidate_products()
     background_tasks.add_task(reload_bm25, services)
     return result
 
 
 @app.delete("/products/{product_id}", dependencies=[Depends(require_admin)])
 def remove_product(product_id: str, background_tasks: BackgroundTasks):
-    """
-    Deletes product from DB. Embedding is deleted with it (same row).
-    BM25 reloaded in background.
-    """
     deleted = delete_product(product_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
+    redis_cache.invalidate_products()
     background_tasks.add_task(reload_bm25, services)
     return {"deleted": True, "id": product_id}
 
@@ -232,14 +240,12 @@ def remove_product(product_id: str, background_tasks: BackgroundTasks):
 
 @app.post("/admin/reindex", dependencies=[Depends(require_admin)])
 async def reindex(background_tasks: BackgroundTasks):
-    """
-    Rebuilds BM25 from DB and re-embeds any products missing embeddings.
-    Use after bulk changes.
-    """
     def _reindex():
         from ingest_db import ingest
-        ingest(force=False)         # embed missing only
-        reload_bm25(services)       # rebuild BM25
+        ingest(force=False)
+        reload_bm25(services)
+        redis_cache.invalidate_products()
+        redis_cache.invalidate_bm25()
         print("✅ Reindex complete.")
     background_tasks.add_task(_reindex)
     return {"status": "reindex started in background"}
@@ -322,6 +328,7 @@ def get_metrics():
         "avg_recommend_latency_ms": round(metrics["recommend_latency_ms"]/rc if rc else 0, 2),
         "avg_compare_latency_ms":   round(metrics["compare_latency_ms"]/cc if cc else 0, 2),
         "constraint_cache_size":    len(_constraint_cache),
+        "redis":                    redis_cache.get_stats(),
     }
 
 

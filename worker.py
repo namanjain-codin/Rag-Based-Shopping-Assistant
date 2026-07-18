@@ -18,6 +18,7 @@ from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 
 from database import get_docs_for_bm25, vector_search
+import cache as redis_cache
 
 load_dotenv()
 
@@ -73,18 +74,29 @@ def load_services() -> Dict[str, Any]:
     print("🔗 Loading Mistral embeddings model...")
     embeddings = MistralAIEmbeddings(model="mistral-embed", api_key=api_key)
 
-    print("📖 Loading in-stock products from DB for BM25...")
-    db_docs = get_docs_for_bm25()
-    all_docs = [product_to_doc(p) for p in db_docs]
+    # Try Redis first for BM25 docs (survives restarts)
+    cached_docs = redis_cache.get_bm25_docs()
+    if cached_docs:
+        print(f"💾 Redis HIT — BM25 docs loaded from cache ({len(cached_docs)} docs)")
+        all_docs = [product_to_doc(p) for p in cached_docs]
+    else:
+        print("📖 Redis MISS — loading in-stock products from DB for BM25...")
+        db_docs  = get_docs_for_bm25()
+        all_docs = [product_to_doc(p) for p in db_docs]
+        # Store minimal doc info in Redis for next startup
+        redis_cache.set_bm25_docs([
+            {"id": d.metadata["id"], "doc_text": d.page_content, **d.metadata}
+            for d in all_docs
+        ])
 
     print(f"🔨 Building BM25 index over {len(all_docs)} in-stock products...")
-    tokenized = [doc.page_content.lower().split() for doc in all_docs]
+    tokenized  = [doc.page_content.lower().split() for doc in all_docs]
     bm25_index = BM25Okapi(tokenized)
 
     print("🤖 Loading Mistral LLM...")
     llm = ChatMistralAI(model="mistral-large-latest", api_key=api_key, temperature=0.2)
 
-    print("✅ All services loaded (pgvector mode — no local FAISS).")
+    print("✅ All services loaded (pgvector + Redis cache).")
     return {
         "embeddings":  embeddings,
         "bm25_index":  bm25_index,
@@ -96,8 +108,7 @@ def load_services() -> Dict[str, Any]:
 def reload_bm25(services: Dict[str, Any]):
     """
     Rebuilds the in-memory BM25 index from DB.
-    Call this after adding/deleting products via the admin panel.
-    Stock=0 products are automatically excluded.
+    Also invalidates Redis BM25 doc cache so next restart gets fresh data.
     """
     print("🔄 Reloading BM25 index from DB...")
     db_docs  = get_docs_for_bm25()
@@ -105,6 +116,11 @@ def reload_bm25(services: Dict[str, Any]):
     tokenized = [doc.page_content.lower().split() for doc in all_docs]
     services["bm25_index"] = BM25Okapi(tokenized)
     services["all_docs"]   = all_docs
+    # Refresh Redis BM25 cache
+    redis_cache.set_bm25_docs([
+        {"id": d.metadata["id"], "doc_text": d.page_content, **d.metadata}
+        for d in all_docs
+    ])
     print(f"✅ BM25 rebuilt — {len(all_docs)} in-stock products indexed.")
 
 
@@ -394,13 +410,25 @@ def hybrid_search(query: str, search_query: str, services: Dict, k: int = 10) ->
 
 
 def get_recommendations(query: str, services: Dict, top_n: int = 5) -> Dict:
-    llm    = services["llm"]
-    cached = services.get("_cached_constraints")
-    if cached:
-        print("💾 Using cached constraints.")
-        constraints = cached if isinstance(cached, dict) else cached.dict()
+    llm        = services["llm"]
+    cache_hit  = False
+    constraints = None
+
+    # 1. Check in-request cache (set by api.py from previous Redis hit)
+    api_cached = services.get("_cached_constraints")
+    if api_cached:
+        constraints = api_cached if isinstance(api_cached, dict) else api_cached.dict()
+        cache_hit   = True
+        print("💾 Using in-request cached constraints.")
     else:
-        constraints = extract_constraints(query, llm)
+        # 2. Check Redis
+        constraints = redis_cache.get_constraints(query)
+        if constraints:
+            cache_hit = True
+        else:
+            # 3. Call LLM — cache miss
+            constraints = extract_constraints(query, llm)
+            redis_cache.set_constraints(query, constraints)
 
     search_query = constraints.get("search_query", query)
     merged       = hybrid_search(query, search_query, services, k=10)
@@ -426,7 +454,8 @@ def get_recommendations(query: str, services: Dict, top_n: int = 5) -> Dict:
         time.sleep(2)
 
     return {
-        "query":               query,
+        "query":                 query,
+        "cache_hit":             cache_hit,
         "extracted_constraints": constraints,
         "retrieval_info": {
             "method":                         "Hybrid (BM25 + pgvector + RRF) + Constraint-Aware Reranking",

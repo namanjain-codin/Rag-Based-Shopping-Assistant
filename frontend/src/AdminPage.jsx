@@ -351,9 +351,9 @@ export default function AdminPage() {
         <div style={{ display:"flex", gap:8 }}>
           {adminTab === "inventory" && <>
             <button className="adm-btn gray" onClick={fetchProducts}>↺ Refresh</button>
-            {/* <button className="adm-btn gray" onClick={handleReindex} disabled={reindexing}>
+            <button className="adm-btn gray" onClick={handleReindex} disabled={reindexing}>
               {reindexing ? "Reindexing…" : "⚙ Reindex AI"}
-            </button> */}
+            </button>
             <button className="adm-btn green" onClick={() => setShowAdd(true)}>+ Add product</button>
           </>}
           {adminTab === "metrics" &&
@@ -369,9 +369,9 @@ export default function AdminPage() {
         <button className={`adm-tab${adminTab==="inventory"?" adm-tab-active":""}`} onClick={()=>setAdminTab("inventory")}>
           📦 Inventory
         </button>
-        {/* <button className={`adm-tab${adminTab==="metrics"?" adm-tab-active":""}`} onClick={()=>{setAdminTab("metrics");fetchMetrics();}}>
+        <button className={`adm-tab${adminTab==="metrics"?" adm-tab-active":""}`} onClick={()=>{setAdminTab("metrics");fetchMetrics();}}>
           📊 Metrics
-        </button> */}
+        </button>
       </div>
 
       {/* ── INVENTORY TAB ── */}
@@ -477,6 +477,33 @@ export default function AdminPage() {
                   </div>
                 ))}
               </div>
+
+              {/* Redis stats */}
+              {metrics.redis && (
+                <div style={{marginTop:20}}>
+                  <div style={{fontSize:13,fontWeight:700,marginBottom:10,color:"var(--tx)",display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{background:metrics.redis.ping?"#22c55e":"#ef4444",width:8,height:8,borderRadius:"50%",display:"inline-block"}}/>
+                    Redis (Upstash) — {metrics.redis.ping ? "connected" : metrics.redis.configured ? "unreachable" : "not configured"}
+                  </div>
+                  {metrics.redis.configured && (
+                    <div className="adm-mgrid">
+                      {[
+                        {l:"Keys in Redis",      v:metrics.redis.key_count,              note:"Total cached entries"},
+                        {l:"Constraint TTL",     v:`${metrics.redis.ttls?.constraints_sec}s`, note:"How long query constraints are cached"},
+                        {l:"Products TTL",       v:`${metrics.redis.ttls?.products_sec}s`,    note:"How long product list is cached"},
+                        {l:"Low stock TTL",      v:`${metrics.redis.ttls?.low_stock_sec}s`,   note:"How long low-stock list is cached"},
+                        {l:"BM25 docs TTL",      v:`${metrics.redis.ttls?.bm25_docs_sec}s`,   note:"How long BM25 docs are cached"},
+                      ].map(m=>(
+                        <div key={m.l} className="adm-mcard">
+                          <div className="adm-mlbl">{m.l}</div>
+                          <div className="adm-mval">{m.v}</div>
+                          <div className="adm-mnote">{m.note}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
