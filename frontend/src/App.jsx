@@ -372,7 +372,7 @@ export default function App() {
   const NAV = [
     {id:"home",label:"🛍️ Shop"},
     {id:"search",label:"✦ AI Search"},
-    {id:"compare",label:"⚖️ Compare"},
+    // {id:"compare",label:"⚖️ Compare"},
     {id:"admin",label:"🔐 Admin"},
   ];
 
@@ -678,7 +678,7 @@ export default function App() {
         <div className="nav-in">
           <div className="logo" onClick={()=>{setPage("home");setMobileNav(false)}}>
             <div className="logo-ic">🛒</div>
-            <div><div className="logo-tx">ShopLens</div><div className="logo-su">RAG Shopping</div></div>
+            <div><div className="logo-tx">ShopLens</div><div className="logo-su">RAG Based Shopping</div></div>
           </div>
           <div className={`nav-links${mobileNav?" open":""}`}>
             {NAV.map(n=>(
@@ -706,19 +706,19 @@ export default function App() {
         <>
           <div className="hero">
             <h1>Shop smarter with<br/><span className="hero-ac">AI-powered search</span></h1>
-            <p className="hero-sub">Describe what you need in plain English — hybrid RAG finds the best match.</p>
+            <p className="hero-sub">Describe what you need in plain English and the hybrid RAG finds the best match.</p>
             <div className="hero-bar">
               <input placeholder='Try "waterproof hiking boots under ₹2000"…'
                 value={aiQuery} onChange={e=>setAiQuery(e.target.value)}
                 onKeyDown={e=>{if(e.key==="Enter"&&e.target.value.trim())setPage("search")}} />
               <button className="hero-sbtn" onClick={()=>{if(aiQuery.trim())setPage("search")}}>Search with AI →</button>
             </div>
-            <div className="hero-stats">
+            {/* <div className="hero-stats">
               <div className="hstat"><span>{products.length||40}</span><span>Products</span></div>
               <div className="hstat"><span>10</span><span>Categories</span></div>
               <div className="hstat"><span>BM25 + pgvector</span><span>Hybrid retrieval</span></div>
               <div className="hstat"><span>RRF</span><span>Rank fusion</span></div>
-            </div>
+            </div> */}
           </div>
 
           <div className="catstrip">
@@ -766,7 +766,7 @@ export default function App() {
       {page==="search" && (
         <div className="page">
           <h1 className="pg-title">AI Search</h1>
-          <p className="pg-sub">Describe what you need — RAG pipeline handles the rest.</p>
+          <p className="pg-sub">Describe what you need, RAG pipeline handles the rest.</p>
           <div className="sbox">
             <div className="srow">
               <input ref={searchRef} className="sinput" value={aiQuery}

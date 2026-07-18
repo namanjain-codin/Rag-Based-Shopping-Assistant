@@ -351,9 +351,9 @@ export default function AdminPage() {
         <div style={{ display:"flex", gap:8 }}>
           {adminTab === "inventory" && <>
             <button className="adm-btn gray" onClick={fetchProducts}>↺ Refresh</button>
-            <button className="adm-btn gray" onClick={handleReindex} disabled={reindexing}>
+            {/* <button className="adm-btn gray" onClick={handleReindex} disabled={reindexing}>
               {reindexing ? "Reindexing…" : "⚙ Reindex AI"}
-            </button>
+            </button> */}
             <button className="adm-btn green" onClick={() => setShowAdd(true)}>+ Add product</button>
           </>}
           {adminTab === "metrics" &&
@@ -369,9 +369,9 @@ export default function AdminPage() {
         <button className={`adm-tab${adminTab==="inventory"?" adm-tab-active":""}`} onClick={()=>setAdminTab("inventory")}>
           📦 Inventory
         </button>
-        <button className={`adm-tab${adminTab==="metrics"?" adm-tab-active":""}`} onClick={()=>{setAdminTab("metrics");fetchMetrics();}}>
+        {/* <button className={`adm-tab${adminTab==="metrics"?" adm-tab-active":""}`} onClick={()=>{setAdminTab("metrics");fetchMetrics();}}>
           📊 Metrics
-        </button>
+        </button> */}
       </div>
 
       {/* ── INVENTORY TAB ── */}
