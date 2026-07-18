@@ -2,6 +2,7 @@
 checkout.py  (v2 — Resend HTTP API, works on Render free tier)
 ---------------------------------------------------------------
 Resend uses HTTPS (port 443) — never blocked by any hosting provider.
+
 """
 
 import os
@@ -33,13 +34,12 @@ def _send_email(to: str, subject: str, html: str):
     if not api_key:
         raise ValueError("RESEND_API_KEY is not set in environment variables.")
 
-    # Use resend.dev domain if no custom domain verified
-    # "From" must be from a verified domain — use onboarding@resend.dev for testing
     sender = "ShopLens <onboarding@resend.dev>"
 
     payload = json.dumps({
         "from":    sender,
         "to":      [to],
+        "reply_to": os.getenv("GMAIL_USER", ""),
         "subject": subject,
         "html":    html,
     }).encode("utf-8")
@@ -50,6 +50,7 @@ def _send_email(to: str, subject: str, html: str):
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type":  "application/json",
+            "User-Agent":    "ShopLens/1.0",
         },
         method="POST",
     )
