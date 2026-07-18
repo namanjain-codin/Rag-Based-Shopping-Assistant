@@ -1,27 +1,24 @@
 """
-checkout.py
------------
-Handles OTP generation, email delivery via Gmail SMTP,
-and order confirmation. OTPs stored in-memory with expiry.
-
+checkout.py  (v2 — Resend HTTP API, works on Render free tier)
+---------------------------------------------------------------
+Resend uses HTTPS (port 443) — never blocked by any hosting provider.
 """
 
 import os
 import random
 import string
-import smtplib
 import time
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import json
+import urllib.request
+import urllib.error
 from typing import Dict, Any
 from dotenv import load_dotenv
 
 load_dotenv()
 
-OTP_EXPIRY_SECONDS = 600  # 10 minutes
+OTP_EXPIRY_SECONDS = 600
 OTP_LENGTH = 6
 
-# In-memory OTP store: email → {otp, expires_at, order_data}
 _otp_store: Dict[str, Dict[str, Any]] = {}
 
 
@@ -29,26 +26,45 @@ def _generate_otp() -> str:
     return "".join(random.choices(string.digits, k=OTP_LENGTH))
 
 
-def _get_gmail_conn():
-    user     = os.getenv("GMAIL_USER")
-    app_pass = os.getenv("GMAIL_APP_PASS")
-    if not user or not app_pass:
-        raise ValueError("GMAIL_USER and GMAIL_APP_PASS must be set.")
-    server = smtplib.SMTP("smtp.gmail.com", 587)
-    server.ehlo()
-    server.starttls()
-    server.ehlo()
-    server.login(user, app_pass)
-    return server, user
+def _send_email(to: str, subject: str, html: str):
+    api_key  = os.getenv("RESEND_API_KEY")
+    from_addr = os.getenv("GMAIL_USER", "ShopLens <onboarding@resend.dev>")
+
+    if not api_key:
+        raise ValueError("RESEND_API_KEY is not set in environment variables.")
+
+    # Use resend.dev domain if no custom domain verified
+    # "From" must be from a verified domain — use onboarding@resend.dev for testing
+    sender = "ShopLens <onboarding@resend.dev>"
+
+    payload = json.dumps({
+        "from":    sender,
+        "to":      [to],
+        "subject": subject,
+        "html":    html,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        raise ValueError(f"Resend API error {e.code}: {body}")
 
 
-# ── Send OTP email ─────────────────────────────────────────────────────────────
+# ── Send OTP ──────────────────────────────────────────────────────────────────
 
 def send_otp(email: str, name: str, order_data: dict) -> str:
-    """
-    Generates OTP, stores it with order data, sends OTP email.
-    Returns the OTP (for logging only — never send to frontend).
-    """
     otp = _generate_otp()
     _otp_store[email.lower()] = {
         "otp":        otp,
@@ -57,11 +73,10 @@ def send_otp(email: str, name: str, order_data: dict) -> str:
         "name":       name,
     }
 
-    subject = "ShopLens — Your OTP to complete purchase"
     html = f"""
     <div style="font-family:-apple-system,sans-serif;max-width:520px;margin:0 auto;background:#0f0f0f;color:#f0f0ef;border-radius:12px;overflow:hidden">
       <div style="background:#7c6ef5;padding:28px 32px">
-        <h1 style="margin:0;font-size:22px;font-weight:800;letter-spacing:-0.5px">🛒 ShopLens</h1>
+        <h1 style="margin:0;font-size:22px;font-weight:800">🛒 ShopLens</h1>
         <p style="margin:6px 0 0;opacity:.85;font-size:14px">Complete your purchase</p>
       </div>
       <div style="padding:32px">
@@ -72,34 +87,19 @@ def send_otp(email: str, name: str, order_data: dict) -> str:
           <p style="margin:0;font-size:40px;font-weight:800;letter-spacing:10px;color:#a89af8">{otp}</p>
           <p style="margin:12px 0 0;font-size:12px;color:#55554f">Valid for 10 minutes</p>
         </div>
-        <p style="font-size:13px;color:#55554f;margin:0">If you didn't request this, ignore this email. Your account is safe.</p>
+        <p style="font-size:13px;color:#55554f;margin:0">If you didn't request this, ignore this email.</p>
       </div>
     </div>
     """
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = os.getenv("GMAIL_USER")
-    msg["To"]      = email
-    msg.attach(MIMEText(html, "html"))
-
-    server, sender = _get_gmail_conn()
-    try:
-        server.sendmail(sender, email, msg.as_string())
-    finally:
-        server.quit()
-
+    _send_email(email, "ShopLens — Your OTP to complete purchase", html)
     return otp
 
 
-# ── Verify OTP ─────────────────────────────────────────────────────────────────
+# ── Verify OTP ────────────────────────────────────────────────────────────────
 
 def verify_otp(email: str, otp: str) -> Dict[str, Any]:
-    """
-    Verifies OTP. Returns order_data if valid.
-    Raises ValueError with reason if invalid/expired.
-    """
-    key = email.lower()
+    key    = email.lower()
     record = _otp_store.get(key)
 
     if not record:
@@ -110,17 +110,14 @@ def verify_otp(email: str, otp: str) -> Dict[str, Any]:
     if record["otp"] != otp.strip():
         raise ValueError("Incorrect OTP. Please try again.")
 
-    # Valid — remove from store (single use)
     data = record.copy()
     del _otp_store[key]
     return data
 
 
-# ── Confirmation email ─────────────────────────────────────────────────────────
+# ── Confirmation email ────────────────────────────────────────────────────────
 
 def send_confirmation(email: str, name: str, mobile: str, address: str, items: list, total: float):
-    """Sends order confirmation email after successful OTP verification."""
-
     items_html = "".join(f"""
         <tr>
           <td style="padding:10px 0;border-bottom:1px solid #2a2a2a;font-size:14px">{item['name']}</td>
@@ -129,51 +126,36 @@ def send_confirmation(email: str, name: str, mobile: str, address: str, items: l
         </tr>
     """ for item in items)
 
-    subject = f"✅ Order Confirmed — ShopLens"
     html = f"""
     <div style="font-family:-apple-system,sans-serif;max-width:520px;margin:0 auto;background:#0f0f0f;color:#f0f0ef;border-radius:12px;overflow:hidden">
       <div style="background:#22c55e;padding:28px 32px">
-        <h1 style="margin:0;font-size:22px;font-weight:800;letter-spacing:-0.5px">🛒 ShopLens</h1>
+        <h1 style="margin:0;font-size:22px;font-weight:800">🛒 ShopLens</h1>
         <p style="margin:6px 0 0;color:#000;font-size:14px;font-weight:600">✅ Order Confirmed!</p>
       </div>
       <div style="padding:32px">
         <p style="font-size:16px;margin:0 0 6px">Hi <strong>{name}</strong>, your order is placed! 🎉</p>
         <p style="color:#88887f;font-size:14px;margin:0 0 28px">Here's your order summary:</p>
-
         <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
           <thead>
             <tr>
-              <th style="text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#55554f;padding-bottom:8px;border-bottom:1px solid #2a2a2a">Item</th>
-              <th style="text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#55554f;padding-bottom:8px;border-bottom:1px solid #2a2a2a">Qty</th>
-              <th style="text-align:right;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#55554f;padding-bottom:8px;border-bottom:1px solid #2a2a2a">Price</th>
+              <th style="text-align:left;font-size:11px;text-transform:uppercase;color:#55554f;padding-bottom:8px;border-bottom:1px solid #2a2a2a">Item</th>
+              <th style="text-align:center;font-size:11px;text-transform:uppercase;color:#55554f;padding-bottom:8px;border-bottom:1px solid #2a2a2a">Qty</th>
+              <th style="text-align:right;font-size:11px;text-transform:uppercase;color:#55554f;padding-bottom:8px;border-bottom:1px solid #2a2a2a">Price</th>
             </tr>
           </thead>
           <tbody>{items_html}</tbody>
         </table>
-
         <div style="display:flex;justify-content:space-between;font-size:16px;font-weight:700;margin-bottom:28px">
           <span>Total</span><span style="color:#a89af8">₹{int(total):,}</span>
         </div>
-
         <div style="background:#1a1a1a;border-radius:10px;padding:18px;margin-bottom:20px;font-size:13px;line-height:1.7;color:#88887f">
           <p style="margin:0 0 4px;font-weight:600;color:#f0f0ef">Delivery details</p>
           <p style="margin:0">{address}</p>
           <p style="margin:4px 0 0">📱 {mobile}</p>
         </div>
-
-        <p style="font-size:13px;color:#55554f;margin:0">Thank you for shopping with ShopLens. Your items will be delivered soon.</p>
+        <p style="font-size:13px;color:#55554f;margin:0">Thank you for shopping with ShopLens.</p>
       </div>
     </div>
     """
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = os.getenv("GMAIL_USER")
-    msg["To"]      = email
-    msg.attach(MIMEText(html, "html"))
-
-    server, sender = _get_gmail_conn()
-    try:
-        server.sendmail(sender, email, msg.as_string())
-    finally:
-        server.quit()
+    _send_email(email, "✅ Order Confirmed — ShopLens", html)
