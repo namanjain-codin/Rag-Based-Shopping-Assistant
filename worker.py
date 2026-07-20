@@ -18,7 +18,7 @@ from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 
 from database import get_docs_for_bm25, vector_search
-import cache as redis_cache
+import redis_cache
 
 load_dotenv()
 
@@ -410,23 +410,27 @@ def hybrid_search(query: str, search_query: str, services: Dict, k: int = 10) ->
 
 
 def get_recommendations(query: str, services: Dict, top_n: int = 5) -> Dict:
-    llm        = services["llm"]
-    cache_hit  = False
+    llm = services["llm"]
+
+    # ── Check full recommendation cache first ──────────────────────────────
+    cached_result = redis_cache.get_recommendation(query, top_n)
+    if cached_result:
+        return {**cached_result, "cache_hit": True}
+
+    # ── Constraint extraction (with its own Redis cache) ───────────────────
+    cache_hit   = False
     constraints = None
 
-    # 1. Check in-request cache (set by api.py from previous Redis hit)
     api_cached = services.get("_cached_constraints")
     if api_cached:
         constraints = api_cached if isinstance(api_cached, dict) else api_cached.dict()
         cache_hit   = True
         print("💾 Using in-request cached constraints.")
     else:
-        # 2. Check Redis
         constraints = redis_cache.get_constraints(query)
         if constraints:
             cache_hit = True
         else:
-            # 3. Call LLM — cache miss
             constraints = extract_constraints(query, llm)
             redis_cache.set_constraints(query, constraints)
 
@@ -453,7 +457,7 @@ def get_recommendations(query: str, services: Dict, top_n: int = 5) -> Dict:
         })
         time.sleep(2)
 
-    return {
+    result = {
         "query":                 query,
         "cache_hit":             cache_hit,
         "extracted_constraints": constraints,
@@ -464,3 +468,7 @@ def get_recommendations(query: str, services: Dict, top_n: int = 5) -> Dict:
         },
         "recommendations": recommendations,
     }
+
+    # ── Store full result in Redis for next time ───────────────────────────
+    redis_cache.set_recommendation(query, top_n, result)
+    return result

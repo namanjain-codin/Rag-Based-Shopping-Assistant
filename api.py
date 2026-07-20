@@ -26,7 +26,7 @@ from database import (
     create_product, update_product, update_stock, set_stock, delete_product,
     upsert_embedding, LOW_STOCK_THRESHOLD,
 )
-import cache as redis_cache
+import redis_cache
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "shoplens-admin-2024")
@@ -137,7 +137,8 @@ def embed_and_store(product: dict):
         embedding = services["embeddings"].embed_query(doc_text)
         upsert_embedding(product["id"], embedding, doc_text)
         reload_bm25(services)
-        redis_cache.invalidate_products()   # flush product cache
+        redis_cache.invalidate_products()
+        redis_cache.invalidate_recommendations()
         print(f"✅ Embedded and indexed: {product['name']}")
     except Exception as e:
         print(f"⚠️  Failed to embed {product['id']}: {e}")
@@ -220,8 +221,9 @@ def adjust_stock(product_id: str, body: StockUpdate, background_tasks: Backgroun
     if not result:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
 
-    # Invalidate Redis product + low-stock cache
+    # Invalidate Redis product + low-stock + recommendation cache
     redis_cache.invalidate_products()
+    redis_cache.invalidate_recommendations()
     background_tasks.add_task(reload_bm25, services)
     return result
 
@@ -232,6 +234,7 @@ def remove_product(product_id: str, background_tasks: BackgroundTasks):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Product {product_id} not found.")
     redis_cache.invalidate_products()
+    redis_cache.invalidate_recommendations()
     background_tasks.add_task(reload_bm25, services)
     return {"deleted": True, "id": product_id}
 
@@ -245,6 +248,7 @@ async def reindex(background_tasks: BackgroundTasks):
         ingest(force=False)
         reload_bm25(services)
         redis_cache.invalidate_products()
+        redis_cache.invalidate_recommendations()
         redis_cache.invalidate_bm25()
         print("✅ Reindex complete.")
     background_tasks.add_task(_reindex)

@@ -458,16 +458,16 @@ export default function AdminPage() {
               </div>
               <div className="adm-mgrid">
                 {[
-                  {l:"Total requests",    v:metrics.total_requests,           note:"All HTTP requests to the API"},
+                  // {l:"Total requests",    v:metrics.total_requests,           note:"All HTTP requests to the API"},
                   {l:"Recommend calls",   v:metrics.recommend_requests,       note:"/recommend endpoint hits"},
-                  {l:"Compare calls",     v:metrics.compare_requests,         note:"/compare endpoint hits"},
+                  // {l:"Compare calls",     v:metrics.compare_requests,         note:"/compare endpoint hits"},
                   {l:"Errors",            v:metrics.errors,                   note:"Failed requests (5xx)"},
                   {l:"Cache hits",        v:metrics.cache_hits,               note:"Queries served from constraint cache"},
                   {l:"Cache misses",      v:metrics.cache_misses,             note:"Queries that called Mistral for extraction"},
                   {l:"Cache hit rate",    v:`${metrics.cache_hit_rate_pct}%`, note:"Higher = fewer LLM calls"},
                   {l:"Avg latency",       v:`${metrics.avg_latency_ms}ms`,    note:"Average across all endpoints"},
                   {l:"Rec latency",       v:`${metrics.avg_recommend_latency_ms}ms`, note:"Average /recommend response time"},
-                  {l:"Cmp latency",       v:`${metrics.avg_compare_latency_ms}ms`,  note:"Average /compare response time"},
+                  // {l:"Cmp latency",       v:`${metrics.avg_compare_latency_ms}ms`,  note:"Average /compare response time"},
                   {l:"Cached queries",    v:metrics.constraint_cache_size,    note:"Unique queries stored in memory"},
                 ].map(m=>(
                   <div key={m.l} className="adm-mcard">

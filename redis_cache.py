@@ -3,6 +3,16 @@ cache.py
 --------
 Redis caching layer using Upstash Redis (REST API).
 Uses Upstash's HTTP REST API — no persistent TCP connection needed,
+works perfectly on Render free tier.
+
+Environment variables needed:
+  UPSTASH_REDIS_REST_URL   = https://xxxx.upstash.io
+  UPSTASH_REDIS_REST_TOKEN = your_token
+
+Setup:
+  1. Go to console.upstash.com → Create Database → free tier
+  2. Copy REST URL and REST Token
+  3. Add both to Render environment variables
 
 Cache keys used:
   constraint:{query_hash}     → extracted constraints (TTL: 1 hour)
@@ -26,6 +36,7 @@ TTL_CONSTRAINTS   = 3600   # 1 hour  — constraint extraction results
 TTL_PRODUCTS      = 300    # 5 min   — full product list
 TTL_LOW_STOCK     = 30     # 30 sec  — low stock list (changes frequently)
 TTL_BM25_DOCS     = 600    # 10 min  — BM25 doc cache
+TTL_RECOMMEND     = 1800   # 30 min  — full recommendation results
 
 
 def _get_config():
@@ -151,6 +162,27 @@ def ping() -> bool:
 def query_hash(query: str) -> str:
     """Stable hash for a query string → used as cache key."""
     return hashlib.md5(query.strip().lower().encode()).hexdigest()
+
+
+def get_recommendation(query: str, top_n: int) -> Optional[dict]:
+    key    = f"recommend:{query_hash(query)}:{top_n}"
+    cached = get(key)
+    if cached:
+        print(f"💾 Redis HIT — full recommendation for: '{query[:50]}' top_n={top_n}")
+    return cached
+
+
+def set_recommendation(query: str, top_n: int, result: dict) -> bool:
+    key = f"recommend:{query_hash(query)}:{top_n}"
+    ok  = set(key, result, TTL_RECOMMEND)
+    if ok:
+        print(f"✅ Redis SET — recommendation cached for: '{query[:50]}' top_n={top_n}")
+    return ok
+
+
+def invalidate_recommendations():
+    """Call when products change — cached recommendations may be stale."""
+    flush_pattern("recommend:*")
 
 
 def get_constraints(query: str) -> Optional[dict]:
