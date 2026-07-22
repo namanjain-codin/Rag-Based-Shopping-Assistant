@@ -15,8 +15,9 @@ import json
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Request, Header, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Header, Depends, BackgroundTasks, Cookie
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from worker import load_services, get_recommendations, compare_products, reload_bm25, build_doc_text
@@ -27,6 +28,10 @@ from database import (
     upsert_embedding, LOW_STOCK_THRESHOLD,
 )
 import redis_cache
+from auth import (
+    signup, login, get_user_from_token, refresh_session,
+    COOKIE_NAME, COOKIE_MAX_AGE,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "shoplens-admin-2024")
@@ -66,11 +71,36 @@ app.add_middleware(
 )
 
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
+# ── Auth dependencies ─────────────────────────────────────────────────────────
 
 def require_admin(x_admin_key: Optional[str] = Header(default=None)):
     if x_admin_key != ADMIN_SECRET:
         raise HTTPException(status_code=401, detail="Invalid or missing admin key.")
+
+
+def get_current_user(request: Request) -> Dict[str, Any]:
+    """
+    Reads session cookie and verifies with Supabase.
+    Returns user dict or raises 401.
+    """
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not logged in.")
+    try:
+        return get_user_from_token(token)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
+
+
+def optional_user(request: Request) -> Optional[Dict[str, Any]]:
+    """Like get_current_user but returns None instead of raising."""
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        return get_user_from_token(token)
+    except Exception:
+        return None
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -94,6 +124,17 @@ class ProductOut(BaseModel):
     id: str; name: str; brand: str; category: str
     price: float; currency: str; rating: float
     features: List[str]; tags: List[str]; description: str; stock: int
+
+# ── Auth models ───────────────────────────────────────────────────────────────
+
+class SignupRequest(BaseModel):
+    email:     str = Field(..., pattern=r"^[^@]+@[^@]+\.[^@]+$")
+    password:  str = Field(..., min_length=6)
+    full_name: str = Field(..., min_length=2)
+
+class LoginRequest(BaseModel):
+    email:    str
+    password: str
 
 class ProductCreate(BaseModel):
     id: str; name: str; brand: str; category: str
@@ -258,7 +299,7 @@ async def reindex(background_tasks: BackgroundTasks):
 # ── RAG endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/recommend")
-def recommend(request: RecommendRequest):
+def recommend(request: RecommendRequest, http_request: Request, user: Dict = Depends(get_current_user)):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
     t_start = time.perf_counter(); cache_hit = False
@@ -438,3 +479,117 @@ def checkout_verify_otp(body: VerifyOtpRequest, background_tasks: BackgroundTask
             "total":   order["total"],
         }
     }
+
+# ── Auth endpoints ────────────────────────────────────────────────────────────
+
+@app.post("/auth/signup")
+def auth_signup(body: SignupRequest):
+    """Create new account. Sets HTTP-only session cookie on success."""
+    try:
+        result = signup(body.email, body.password, body.full_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    response = JSONResponse({
+        "status": "ok",
+        "user": result["user"],
+    })
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=result["access_token"],
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+    )
+    return response
+
+
+@app.post("/auth/login")
+def auth_login(body: LoginRequest):
+    """Login with email + password. Sets HTTP-only session cookie."""
+    try:
+        result = login(body.email, body.password)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    response = JSONResponse({
+        "status": "ok",
+        "user": result["user"],
+    })
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=result["access_token"],
+        httponly=True,
+        secure=True,
+        samesite="none",
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+    )
+    return response
+
+
+@app.post("/auth/logout")
+def auth_logout():
+    """Clears session cookie."""
+    response = JSONResponse({"status": "logged_out"})
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+    )
+    return response
+
+
+@app.get("/auth/me")
+def auth_me(user: Dict = Depends(get_current_user)):
+    """Returns current user info from session cookie."""
+    return {"status": "ok", "user": user}
+
+
+# ── Health + root ─────────────────────────────────────────────────────────────
+
+@app.get("/health")
+def health():
+    ready = bool(services.get("embeddings") and services.get("bm25_index") and services.get("llm"))
+    low   = get_low_stock_products()
+    return {
+        "status": "healthy" if ready else "degraded",
+        "mode":   "pgvector + redis + supabase-auth",
+        "low_stock_count": len(low),
+        "services": {
+            "pgvector":   "supabase",
+            "bm25":       f"{len(services.get('all_docs', []))} docs" if ready else "not loaded",
+            "embeddings": "mistral-embed" if ready else "not loaded",
+            "llm":        "mistral-large-latest" if ready else "not loaded",
+            "redis":      "connected" if redis_cache.ping() else "not configured",
+        }
+    }
+
+
+@app.get("/metrics")
+def get_metrics():
+    total = metrics["total_requests"]; rc = metrics["recommend_requests"]; cc = metrics["compare_requests"]
+    ct    = metrics["cache_hits"] + metrics["cache_misses"]
+    return {
+        "total_requests":           total,
+        "recommend_requests":       rc,
+        "compare_requests":         cc,
+        "errors":                   metrics["errors"],
+        "cache_hits":               metrics["cache_hits"],
+        "cache_misses":             metrics["cache_misses"],
+        "cache_hit_rate_pct":       round(metrics["cache_hits"]/ct*100 if ct else 0, 2),
+        "avg_latency_ms":           round(metrics["total_latency_ms"]/total if total else 0, 2),
+        "avg_recommend_latency_ms": round(metrics["recommend_latency_ms"]/rc if rc else 0, 2),
+        "avg_compare_latency_ms":   round(metrics["compare_latency_ms"]/cc if cc else 0, 2),
+        "constraint_cache_size":    len(_constraint_cache),
+        "redis":                    redis_cache.get_stats(),
+    }
+
+
+@app.get("/")
+def root():
+    return {"message": "🛒 ShopLens API v3 — pgvector + Redis + Supabase Auth"}

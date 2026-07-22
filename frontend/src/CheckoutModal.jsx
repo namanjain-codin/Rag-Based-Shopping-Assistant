@@ -4,13 +4,16 @@ const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const STEPS = ["details", "otp", "success"];
 
-function Field({ label, type = "text", value, onChange, placeholder, error, hint }) {
+function Field({ label, type = "text", value, onChange, placeholder, error, hint, readonly }) {
   return (
     <div className="co-field">
       <label className="co-label">{label}</label>
       <input
-        type={type} value={value} onChange={e => onChange(e.target.value)}
-        placeholder={placeholder} className={`co-input${error ? " co-input-err" : ""}`}
+        type={type} value={value}
+        onChange={e => !readonly && onChange(e.target.value)}
+        placeholder={placeholder}
+        readOnly={readonly}
+        className={`co-input${error ? " co-input-err" : ""}${readonly ? " co-input-readonly" : ""}`}
       />
       {hint  && <p className="co-hint">{hint}</p>}
       {error && <p className="co-err-msg">{error}</p>}
@@ -18,14 +21,14 @@ function Field({ label, type = "text", value, onChange, placeholder, error, hint
   );
 }
 
-export default function CheckoutModal({ cart, total, onClose, onSuccess }) {
+export default function CheckoutModal({ cart, total, user, onClose, onSuccess }) {
   const [step, setStep]     = useState("details");
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState("");
 
-  // Step 1 — details
-  const [name, setName]       = useState("");
-  const [email, setEmail]     = useState("");
+  // Step 1 — pre-fill from logged-in user
+  const [name, setName]       = useState(user?.full_name || "");
+  const [email, setEmail]     = useState(user?.email || "");
   const [mobile, setMobile]   = useState("");
   const [address, setAddress] = useState("");
   const [errors, setErrors]   = useState({});
@@ -61,6 +64,7 @@ export default function CheckoutModal({ cart, total, onClose, onSuccess }) {
       const res = await fetch(`${API_BASE}/checkout/send-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           name: name.trim(), email: email.trim(),
           mobile: mobile.trim(), address: address.trim(),
@@ -91,6 +95,7 @@ export default function CheckoutModal({ cart, total, onClose, onSuccess }) {
       const res = await fetch(`${API_BASE}/checkout/send-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           name: name.trim(), email: email.trim(),
           mobile: mobile.trim(), address: address.trim(),
@@ -113,6 +118,7 @@ export default function CheckoutModal({ cart, total, onClose, onSuccess }) {
       const res = await fetch(`${API_BASE}/checkout/verify-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ email: email.trim(), otp: otp.trim() }),
       });
       const data = await res.json();
@@ -139,7 +145,7 @@ export default function CheckoutModal({ cart, total, onClose, onSuccess }) {
         .co-label{display:block;font-size:12px;color:#88887f;font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
         .co-input{width:100%;background:#242424;border:.5px solid rgba(255,255,255,.1);border-radius:8px;padding:11px 14px;font-size:14px;color:#f0f0ef;font-family:inherit;outline:none;transition:border-color .15s}
         .co-input:focus{border-color:#7c6ef5}
-        .co-input-err{border-color:#ef4444!important}
+        .co-input-readonly{opacity:.6;cursor:not-allowed;background:#1a1a1a!important}
         .co-err-msg{font-size:12px;color:#f87171;margin-top:4px}
         .co-hint{font-size:12px;color:#55554f;margin-top:4px}
         .co-api-err{background:#ef444412;color:#f87171;font-size:13px;padding:10px 14px;border-radius:8px;margin-bottom:14px}
@@ -241,7 +247,8 @@ export default function CheckoutModal({ cart, total, onClose, onSuccess }) {
                   placeholder="Naman Jain" error={errors.name} />
                 <Field label="Email address" type="email" value={email} onChange={setEmail}
                   placeholder="you@example.com" error={errors.email}
-                  hint="OTP will be sent here" />
+                  hint={user?.email ? "✓ Using your account email" : "OTP will be sent here"}
+                  readonly={!!user?.email} />
                 <Field label="Mobile number" type="tel" value={mobile} onChange={setMobile}
                   placeholder="9876543210" error={errors.mobile}
                   hint="10-digit Indian mobile number" />

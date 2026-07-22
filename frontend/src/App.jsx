@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import AdminPage from "./AdminPage.jsx";
 import CheckoutModal from "./CheckoutModal.jsx";
+import AuthPage from "./AuthPage.jsx";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const LOW_STOCK_THRESHOLD = 5;
@@ -222,15 +223,77 @@ function Toast({ msg, onClose }) {
 
 
 export default function App() {
-  const [page, setPage]           = useState("home");
-  const [mobileNav, setMobileNav] = useState(false);
+  const [page, setPage]               = useState("home");
+  const [mobileNav, setMobileNav]     = useState(false);
 
-  // Cart
-  const [cart, setCart]               = useState([]);
-  const [cartOpen, setCartOpen]       = useState(false);
-  const [checkoutOpen, setCheckoutOpen] = useState(false);
-  const [toast, setToast]             = useState("");
+  // Auth
+  const [user, setUser]               = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Cart — persisted to localStorage so it survives refresh
+  const [cart, setCart] = useState(() => {
+    try {
+      const saved = localStorage.getItem("shoplens_cart");
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+  const [cartOpen, setCartOpen]           = useState(false);
+  const [checkoutOpen, setCheckoutOpen]   = useState(false);
+  const [toast, setToast]                 = useState("");
+
+  // Products from DB
+  const [products, setProducts]       = useState([]);
+  const [dbLoaded, setDbLoaded]       = useState(false);
+  const [lowStock, setLowStock]       = useState([]);
+
+  // Catalog filters
+  const [cat, setCat]   = useState("All");
+  const [sort, setSort] = useState("rating");
+  const [q, setQ]       = useState("");
+
+  // AI search
+  const [aiQuery, setAiQuery]     = useState("");
+  const [topN, setTopN]           = useState(3);
+  const [aiResult, setAiResult]   = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError]     = useState("");
+  const searchRef = useRef(null);
+
+  // Compare
+  const [cmpNames, setCmpNames]     = useState("");
+  const [cmpUse, setCmpUse]         = useState("");
+  const [cmpResult, setCmpResult]   = useState(null);
+  const [cmpLoading, setCmpLoading] = useState(false);
+  const [cmpError, setCmpError]     = useState("");
+
+  // Metrics
+  const [metrics, setMetrics]               = useState(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+
   const cartCount = cart.reduce((s, i) => s + i.qty, 0);
+
+  // Sync cart to localStorage on every change
+  useEffect(() => {
+    try { localStorage.setItem("shoplens_cart", JSON.stringify(cart)); }
+    catch {}
+  }, [cart]);
+
+  // Check existing session on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/auth/me`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.user) setUser(data.user); })
+      .catch(() => {})
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  const handleLogout = async () => {
+    await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+    setUser(null);
+    setCart([]);
+    localStorage.removeItem("shoplens_cart");
+    setPage("home");
+  };
 
   const addToCart = (p) => {
     if (p.stock === 0) return;
@@ -264,39 +327,9 @@ export default function App() {
     fetchProducts();
   };
 
-  // Products from DB
-  const [products, setProducts]   = useState([]);
-  const [dbLoaded, setDbLoaded]   = useState(false);
-  const [lowStock, setLowStock]   = useState([]);
-
-  // Catalog filters
-  const [cat, setCat]   = useState("All");
-  const [sort, setSort] = useState("rating");
-  const [q, setQ]       = useState("");
-
-  // AI search
-  const [aiQuery, setAiQuery]   = useState("");
-  const [topN, setTopN]         = useState(3);
-  const [aiResult, setAiResult] = useState(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError]   = useState("");
-  const searchRef = useRef(null);
-
-  // Compare
-  const [cmpNames, setCmpNames]     = useState("");
-  const [cmpUse, setCmpUse]         = useState("");
-  const [cmpResult, setCmpResult]   = useState(null);
-  const [cmpLoading, setCmpLoading] = useState(false);
-  const [cmpError, setCmpError]     = useState("");
-
-  // Metrics
-  const [metrics, setMetrics]         = useState(null);
-  const [metricsLoading, setMetricsLoading] = useState(false);
-
-  // Fetch products from DB on mount
   const fetchProducts = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/products`);
+      const res = await fetch(`${API_BASE}/products`, { credentials: "include" });
       if (!res.ok) return;
       const data = await res.json();
       setProducts(data);
@@ -305,69 +338,98 @@ export default function App() {
     setDbLoaded(true);
   }, []);
 
-  useEffect(() => { fetchProducts(); }, [fetchProducts]);
+  useEffect(() => { if (user) fetchProducts(); }, [fetchProducts, user]);
 
-  // Also poll low-stock endpoint every 60s
   useEffect(() => {
     const poll = async () => {
       try {
-        const res = await fetch(`${API_BASE}/products/low-stock`);
+        const res = await fetch(`${API_BASE}/products/low-stock`, { credentials: "include" });
         if (res.ok) setLowStock(await res.json());
       } catch {}
     };
+    if (!user) return;
     const id = setInterval(poll, 60000);
     return () => clearInterval(id);
-  }, []);
+  }, [user]);
 
   const filtered = useMemo(() => {
     let list = products;
-    if (cat !== "All") list = list.filter(p=>p.category===cat);
+    if (cat !== "All") list = list.filter(p => p.category === cat);
     if (q.trim()) {
       const lq = q.toLowerCase();
-      list = list.filter(p=>
+      list = list.filter(p =>
         p.name.toLowerCase().includes(lq) ||
         p.brand.toLowerCase().includes(lq) ||
-        (p.features||[]).some(f=>f.toLowerCase().includes(lq))
+        (p.features||[]).some(f => f.toLowerCase().includes(lq))
       );
     }
-    if (sort==="rating")      list=[...list].sort((a,b)=>b.rating-a.rating);
-    if (sort==="price-asc")   list=[...list].sort((a,b)=>a.price-b.price);
-    if (sort==="price-desc")  list=[...list].sort((a,b)=>b.price-a.price);
-    if (sort==="stock-asc")   list=[...list].sort((a,b)=>(a.stock||0)-(b.stock||0));
+    if (sort === "rating")     list = [...list].sort((a,b) => b.rating - a.rating);
+    if (sort === "price-asc")  list = [...list].sort((a,b) => a.price - b.price);
+    if (sort === "price-desc") list = [...list].sort((a,b) => b.price - a.price);
+    if (sort === "stock-asc")  list = [...list].sort((a,b) => (a.stock||0) - (b.stock||0));
     return list;
   }, [products, cat, sort, q]);
 
-  const askAI = (name) => { setAiQuery(`Tell me about ${name} and similar products`); setPage("search"); setTimeout(()=>searchRef.current?.focus(),100); };
+  const askAI = (name) => {
+    setAiQuery(`Tell me about ${name} and similar products`);
+    setPage("search");
+    setTimeout(() => searchRef.current?.focus(), 100);
+  };
 
   const handleSearch = async () => {
     if (!aiQuery.trim()) return;
     setAiLoading(true); setAiError(""); setAiResult(null);
     try {
-      const res = await fetch(`${API_BASE}/recommend`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:aiQuery.trim(),top_n:topN})});
-      if (!res.ok) throw new Error((await res.json()).detail||"Failed");
+      const res = await fetch(`${API_BASE}/recommend`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ query: aiQuery.trim(), top_n: topN }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || "Failed");
       setAiResult(await res.json());
-    } catch(e){ setAiError(e.message); }
+    } catch(e) { setAiError(e.message); }
     setAiLoading(false);
   };
 
   const handleCompare = async () => {
-    const names = cmpNames.split(",").map(s=>s.trim()).filter(Boolean);
-    if (names.length<2){setCmpError("Enter at least 2 names.");return;}
-    if (!cmpUse.trim()){setCmpError("Describe the use case.");return;}
+    const names = cmpNames.split(",").map(s => s.trim()).filter(Boolean);
+    if (names.length < 2) { setCmpError("Enter at least 2 names."); return; }
+    if (!cmpUse.trim())   { setCmpError("Describe the use case."); return; }
     setCmpLoading(true); setCmpError(""); setCmpResult(null);
     try {
-      const res = await fetch(`${API_BASE}/compare`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product_names:names,use_case:cmpUse.trim()})});
-      if (!res.ok) throw new Error((await res.json()).detail||"Failed");
+      const res = await fetch(`${API_BASE}/compare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ product_names: names, use_case: cmpUse.trim() }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || "Failed");
       setCmpResult(await res.json());
-    } catch(e){ setCmpError(e.message); }
+    } catch(e) { setCmpError(e.message); }
     setCmpLoading(false);
   };
 
   const handleMetrics = async () => {
     setMetricsLoading(true);
-    try { const res=await fetch(`${API_BASE}/metrics`); setMetrics(await res.json()); } catch {}
+    try {
+      const res = await fetch(`${API_BASE}/metrics`, { credentials: "include" });
+      setMetrics(await res.json());
+    } catch {}
     setMetricsLoading(false);
   };
+
+  // ── Early returns AFTER all hooks ──────────────────────────────────────────
+  if (!authChecked) return (
+    <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:"#0f0f0f", color:"#88887f", fontSize:14 }}>
+      <div style={{ textAlign:"center" }}>
+        <div style={{ fontSize:36, marginBottom:12 }}>🛒</div>
+        <p>Loading ShopLens…</p>
+      </div>
+    </div>
+  );
+
+  if (!user) return <AuthPage onAuth={setUser} />;
 
   const NAV = [
     {id:"home",label:"🛍️ Shop"},
@@ -625,6 +687,11 @@ export default function App() {
       .foot-in{max-width:1200px;margin:0 auto}
       .tbadges{display:flex;justify-content:center;gap:7px;flex-wrap:wrap;margin-top:10px}
       .tbadge{font-size:11px;padding:3px 10px;border-radius:12px;border:.5px solid var(--bd2);color:var(--mt)}
+      .nav-user{display:flex;align-items:center;gap:8px;flex-shrink:0}
+      .nav-user-name{font-size:13px;color:var(--mt);white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis}
+      @media(max-width:700px){.nav-user-name{display:none}}
+      .nav-logout-btn{background:transparent;border:.5px solid var(--bd2);border-radius:var(--rs);padding:6px 12px;color:var(--mt);font-size:12px;cursor:pointer;font-family:inherit;transition:all .15s;white-space:nowrap}
+      .nav-logout-btn:hover{color:var(--tx);border-color:var(--bd2);background:var(--sur2)}
       /* CART */
       .cart-icon-btn{position:relative;background:var(--sur2);border:.5px solid var(--bd2);border-radius:var(--rs);padding:8px 14px;color:var(--tx);cursor:pointer;font-size:18px;font-family:inherit;transition:background .15s;display:flex;align-items:center;gap:6px;flex-shrink:0}
       .cart-icon-btn:hover{background:var(--sur)}
@@ -678,7 +745,7 @@ export default function App() {
         <div className="nav-in">
           <div className="logo" onClick={()=>{setPage("home");setMobileNav(false)}}>
             <div className="logo-ic">🛒</div>
-            <div><div className="logo-tx">ShopLens</div><div className="logo-su">RAG Based Shopping</div></div>
+            <div><div className="logo-tx">ShopLens</div><div className="logo-su">RAG Shopping</div></div>
           </div>
           <div className={`nav-links${mobileNav?" open":""}`}>
             {NAV.map(n=>(
@@ -692,6 +759,10 @@ export default function App() {
             🛒
             {cartCount > 0 && <span className="cart-badge">{cartCount}</span>}
           </button>
+          <div className="nav-user">
+            <span className="nav-user-name">{user?.full_name || user?.email?.split("@")[0] || "User"}</span>
+            <button className="nav-logout-btn" onClick={handleLogout}>Sign out</button>
+          </div>
           <button className="hamburger" onClick={()=>setMobileNav(!mobileNav)} aria-label="Menu">
             <span/><span/><span/>
           </button>
@@ -706,7 +777,7 @@ export default function App() {
         <>
           <div className="hero">
             <h1>Shop smarter with<br/><span className="hero-ac">AI-powered search</span></h1>
-            <p className="hero-sub">Describe what you need in plain English and the hybrid RAG finds the best match.</p>
+            <p className="hero-sub">Describe what you need in plain English, hybrid RAG finds the best match for you.</p>
             <div className="hero-bar">
               <input placeholder='Try "waterproof hiking boots under ₹2000"…'
                 value={aiQuery} onChange={e=>setAiQuery(e.target.value)}
@@ -766,7 +837,7 @@ export default function App() {
       {page==="search" && (
         <div className="page">
           <h1 className="pg-title">AI Search</h1>
-          <p className="pg-sub">Describe what you need, RAG pipeline handles the rest.</p>
+          <p className="pg-sub">Describe what you need — RAG pipeline handles the rest.</p>
           <div className="sbox">
             <div className="srow">
               <input ref={searchRef} className="sinput" value={aiQuery}
@@ -874,6 +945,7 @@ export default function App() {
         <CheckoutModal
           cart={cart}
           total={cart.reduce((s,i)=>s+i.price*i.qty,0)}
+          user={user}
           onClose={()=>setCheckoutOpen(false)}
           onSuccess={handleOrderSuccess}
         />

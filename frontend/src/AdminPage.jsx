@@ -24,6 +24,7 @@ function StockControls({ product, onUpdate }) {
           "Content-Type": "application/json",
           "X-Admin-Key": sessionStorage.getItem("adminKey") || "",
         },
+        credentials: "include",
         body: JSON.stringify({ action, quantity: qty }),
       });
       if (!res.ok) throw new Error((await res.json()).detail);
@@ -69,6 +70,7 @@ function AddProductModal({ onClose, onAdded }) {
           "Content-Type": "application/json",
           "X-Admin-Key": sessionStorage.getItem("adminKey") || "",
         },
+        credentials: "include",
         body: JSON.stringify({
           ...form,
           price:    parseFloat(form.price),
@@ -165,6 +167,7 @@ function EditModal({ product, onClose, onSaved }) {
           "Content-Type": "application/json",
           "X-Admin-Key": sessionStorage.getItem("adminKey") || "",
         },
+        credentials: "include",
         body: JSON.stringify({
           ...form,
           price:    parseFloat(form.price),
@@ -234,10 +237,31 @@ function EditModal({ product, onClose, onSaved }) {
 }
 
 export default function AdminPage() {
-  const [authed, setAuthed]     = useState(!!sessionStorage.getItem("adminKey"));
+  const [authed, setAuthed]     = useState(false);
   const [keyInput, setKeyInput] = useState("");
   const [authErr, setAuthErr]   = useState("");
-  const [adminTab, setAdminTab] = useState("inventory"); // inventory | metrics
+  const [adminTab, setAdminTab] = useState("inventory");
+
+  // Validate stored key against backend on mount
+  useEffect(() => {
+    const stored = sessionStorage.getItem("adminKey");
+    if (!stored) return;
+    fetch(`${API_BASE}/admin/reindex`, {
+      method: "POST",
+      headers: { "X-Admin-Key": stored },
+      credentials: "include",
+    }).then(res => {
+      if (res.status === 401) {
+        sessionStorage.removeItem("adminKey");
+        setAuthed(false);
+      } else {
+        setAuthed(true);
+      }
+    }).catch(() => {
+      // Network error — trust stored key for now
+      setAuthed(true);
+    });
+  }, []);
 
   const [products, setProducts] = useState([]);
   const [loading, setLoading]   = useState(false);
@@ -274,10 +298,31 @@ export default function AdminPage() {
     setReindexing(false);
   };
 
-  const login = () => {
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  const login = async () => {
     if (!keyInput.trim()) { setAuthErr("Enter the admin key."); return; }
-    sessionStorage.setItem("adminKey", keyInput.trim());
-    setAuthed(true);
+    setLoginLoading(true);
+    setAuthErr("");
+    try {
+      // Validate key against backend by calling a protected endpoint
+      const res = await fetch(`${API_BASE}/admin/reindex`, {
+        method: "POST",
+        headers: { "X-Admin-Key": keyInput.trim() },
+        credentials: "include",
+      });
+      if (res.status === 401) {
+        setAuthErr("Invalid admin key. Please try again.");
+        setLoginLoading(false);
+        return;
+      }
+      // Key is valid — store and proceed
+      sessionStorage.setItem("adminKey", keyInput.trim());
+      setAuthed(true);
+    } catch {
+      setAuthErr("Could not reach the server. Please try again.");
+    }
+    setLoginLoading(false);
   };
 
   const fetchProducts = async () => {
@@ -305,6 +350,7 @@ export default function AdminPage() {
       const res = await fetch(`${API_BASE}/products/${id}`, {
         method: "DELETE",
         headers: { "X-Admin-Key": sessionStorage.getItem("adminKey") || "" },
+        credentials: "include",
       });
       if (!res.ok) throw new Error((await res.json()).detail);
       setProducts(ps => ps.filter(p => p.id !== id));
@@ -335,7 +381,9 @@ export default function AdminPage() {
           className="adm-key-input"
         />
         {authErr && <div className="adm-error">{authErr}</div>}
-        <button className="adm-btn green wide" onClick={login}>Login</button>
+        <button className="adm-btn green wide" onClick={login} disabled={loginLoading}>
+          {loginLoading ? "Verifying…" : "Login"}
+        </button>
       </div>
     </div>
   );
@@ -451,23 +499,23 @@ export default function AdminPage() {
           {metrics && (
             <>
               {/* Cache explanation banner */}
-              <div className="adm-info-strip">
+              {/* <div className="adm-info-strip">
                 <strong>What is caching?</strong> Constraint extraction (parsing price/category/features from a query) calls Mistral LLM and takes ~1s.
                 Results are cached in memory keyed by query string — identical queries skip the LLM call entirely and reuse the extracted constraints.
                 Cache is in-memory only and resets on server restart.
-              </div>
+              </div> */}
               <div className="adm-mgrid">
                 {[
-                  // {l:"Total requests",    v:metrics.total_requests,           note:"All HTTP requests to the API"},
+                  {l:"Total requests",    v:metrics.total_requests,           note:"All HTTP requests to the API"},
                   {l:"Recommend calls",   v:metrics.recommend_requests,       note:"/recommend endpoint hits"},
-                  // {l:"Compare calls",     v:metrics.compare_requests,         note:"/compare endpoint hits"},
+                  {l:"Compare calls",     v:metrics.compare_requests,         note:"/compare endpoint hits"},
                   {l:"Errors",            v:metrics.errors,                   note:"Failed requests (5xx)"},
                   {l:"Cache hits",        v:metrics.cache_hits,               note:"Queries served from constraint cache"},
                   {l:"Cache misses",      v:metrics.cache_misses,             note:"Queries that called Mistral for extraction"},
                   {l:"Cache hit rate",    v:`${metrics.cache_hit_rate_pct}%`, note:"Higher = fewer LLM calls"},
                   {l:"Avg latency",       v:`${metrics.avg_latency_ms}ms`,    note:"Average across all endpoints"},
                   {l:"Rec latency",       v:`${metrics.avg_recommend_latency_ms}ms`, note:"Average /recommend response time"},
-                  // {l:"Cmp latency",       v:`${metrics.avg_compare_latency_ms}ms`,  note:"Average /compare response time"},
+                  {l:"Cmp latency",       v:`${metrics.avg_compare_latency_ms}ms`,  note:"Average /compare response time"},
                   {l:"Cached queries",    v:metrics.constraint_cache_size,    note:"Unique queries stored in memory"},
                 ].map(m=>(
                   <div key={m.l} className="adm-mcard">
