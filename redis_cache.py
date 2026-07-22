@@ -2,17 +2,7 @@
 cache.py
 --------
 Redis caching layer using Upstash Redis (REST API).
-Uses Upstash's HTTP REST API — no persistent TCP connection needed,
-works perfectly on Render free tier.
-
-Environment variables needed:
-  UPSTASH_REDIS_REST_URL   = https://xxxx.upstash.io
-  UPSTASH_REDIS_REST_TOKEN = your_token
-
-Setup:
-  1. Go to console.upstash.com → Create Database → free tier
-  2. Copy REST URL and REST Token
-  3. Add both to Render environment variables
+Uses Upstash's HTTP REST API — no persistent TCP connection needed
 
 Cache keys used:
   constraint:{query_hash}     → extracted constraints (TTL: 1 hour)
@@ -203,6 +193,16 @@ def set_constraints(query: str, constraints: dict) -> bool:
 
 # ── Product cache ──────────────────────────────────────────────────────────────
 
+def _strip_datetimes(obj):
+    """Remove non-JSON-serializable fields (datetime) from dicts."""
+    if isinstance(obj, list):
+        return [_strip_datetimes(i) for i in obj]
+    if isinstance(obj, dict):
+        return {k: v for k, v in obj.items()
+                if not hasattr(v, 'isoformat')}  # drop datetime objects
+    return obj
+
+
 def get_products(category: Optional[str] = None) -> Optional[list]:
     key = f"products:all:{category or 'all'}"
     return get(key)
@@ -210,7 +210,7 @@ def get_products(category: Optional[str] = None) -> Optional[list]:
 
 def set_products(products: list, category: Optional[str] = None) -> bool:
     key = f"products:all:{category or 'all'}"
-    return set(key, products, TTL_PRODUCTS)
+    return set(key, _strip_datetimes(products), TTL_PRODUCTS)
 
 
 def get_low_stock() -> Optional[list]:
@@ -218,7 +218,7 @@ def get_low_stock() -> Optional[list]:
 
 
 def set_low_stock(items: list) -> bool:
-    return set("products:low_stock", items, TTL_LOW_STOCK)
+    return set("products:low_stock", _strip_datetimes(items), TTL_LOW_STOCK)
 
 
 def invalidate_products():
@@ -233,7 +233,7 @@ def get_bm25_docs() -> Optional[list]:
 
 
 def set_bm25_docs(docs: list) -> bool:
-    return set("bm25:docs", docs, TTL_BM25_DOCS)
+    return set("bm25:docs", _strip_datetimes(docs), TTL_BM25_DOCS)
 
 
 def invalidate_bm25():
