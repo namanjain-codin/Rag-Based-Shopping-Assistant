@@ -425,6 +425,12 @@ export default function App() {
       <div style={{ textAlign:"center" }}>
         <div style={{ fontSize:36, marginBottom:12 }}>🛒</div>
         <p>Loading ShopLens…</p>
+        
+        <div id="note" style={{width : "400px"}}>
+          <p>
+          Note: This Project is deployed on the free tier of render, which goes to sleep after 15 minutes of inactivity, and takes 50 seconds to spin up after the first http request, So if it is taking a longer time to respond initially, this is likely the case. Thank You for your patience.
+          </p>
+        </div>
       </div>
     </div>
   );
